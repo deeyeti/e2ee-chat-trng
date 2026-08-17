@@ -107,17 +107,30 @@ class TRNG extends EventTarget {
   }
 
   /**
-   * iOS 13+ requires a user-gesture tap before calling requestPermission().
+   * Returns true only for real iOS devices (iPhone / iPad) where
+   * DeviceMotionEvent.requestPermission() MUST be called from a user-gesture.
+   *
+   * macOS Safari desktop also exposes the API but does not require a visible
+   * button — we call requestPermission() silently there and fall back to CSPRNG
+   * on denial.  Windows / Android browsers never need a gesture.
    * @returns {boolean}
    */
   requiresPermissionGesture() {
-    return typeof DeviceMotionEvent !== 'undefined' &&
-           typeof DeviceMotionEvent.requestPermission === 'function';
+    if (typeof DeviceMotionEvent === 'undefined') return false;
+    if (typeof DeviceMotionEvent.requestPermission !== 'function') return false;
+    // Only real iOS (iPhone / iPad / iPod) demands the button.
+    // iPad in desktop-UA mode reports 'MacIntel' but has maxTouchPoints > 1.
+    const ua = navigator.userAgent;
+    const isIOS = /iPhone|iPod/i.test(ua) ||
+      (/iPad/i.test(ua)) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    return isIOS;
   }
 
   /**
-   * Request sensor permissions (iOS 13+).
-   * MUST be called from inside a user-gesture handler.
+   * Request sensor permissions.
+   * On iOS this MUST come from a user-gesture handler.
+   * On other platforms it is called silently.
    * @returns {Promise<boolean>}
    */
   async requestPermission() {
@@ -130,7 +143,7 @@ class TRNG extends EventTarget {
         return false;
       }
     }
-    return true; // Android / non-iOS — implicit
+    return true; // Android / Windows — implicit
   }
 
   /**
