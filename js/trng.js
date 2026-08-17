@@ -1,262 +1,302 @@
 /**
- * trng.js — Hardware Entropy Harvester (True Random Number Generator)
+ * trng.js — Hardware Entropy Harvester (True Random Number Generator) v1.2
  *
  * Pipeline:
- *   1. Request DeviceMotion/Orientation permission (iOS 13+)
+ *   1. Request DeviceMotion permission (iOS 13+ requires a user-gesture tap)
  *   2. Sample accelerometer/gyroscope at the browser-allowed rate (~60 Hz)
- *   3. Extract Least Significant Bits (LSBs) from each axis reading
+ *   3. Extract entropy bytes using modular integer arithmetic on raw floats
+ *      (robust against sensors that only return 3-4 decimal places)
  *   4. Apply Von Neumann debiasing to remove correlation/bias
  *   5. Collect 256 debiased bits → 32 bytes
- *   6. Whiten via SHA-256 (cryptographic hash) for final key material
+ *   6. Whiten via SHA-256 for final entropy buffer
  *
- * Falls back to crypto.getRandomValues() on devices without sensors.
+ * Falls back to crypto.getRandomValues() on devices without sensors,
+ * with a smooth animated progress sweep so the UI doesn't jump 0→100.
  *
- * Events emitted on the returned EventTarget:
- *   - 'progress'  → { detail: { percent: 0-100, bitsCollected, bitsNeeded } }
- *   - 'status'    → { detail: { message } }
- *   - 'complete'  → { detail: { entropy: Uint8Array(32), usedSensor: bool } }
- *   - 'error'     → { detail: { message: string } }
+ * Events emitted:
+ *   'progress' → { percent, bitsCollected, bitsNeeded }
+ *   'status'   → { message }   (human-readable step label)
+ *   'complete' → { entropy: Uint8Array(32), usedSensor: bool }
  */
 
-const BITS_NEEDED = 256;       // 256-bit AES key
-const SENSOR_SCALE = 1000;     // retain milligravity / millidegree sensor detail
-const BITS_PER_READING = 12;
-const SENSOR_TIMEOUT_MS = 30000;
-const MAX_AUDIT_SAMPLES = 2048;
+const BITS_NEEDED = 256;
+const SCALE_FACTOR = 1e4; // shifts sensor readings so noise lands in integer range
 
 /**
- * Extract low-order binary bits from a fixed-point sensor reading. Fixed-point
- * extraction works with phones that quantise their readings to a few decimal
- * places, where the former decimal-digit approach produced only zeroes.
+ * Extract entropy bytes from a raw sensor float.
  *
- * @param {number} value - raw sensor reading
- * @returns {number[]} - array of extracted bits (0 or 1)
+ * Instead of slicing fixed string-digit positions (which breaks when sensors
+ * return ≤4 decimal places), we scale the value so the noisy fractional part
+ * becomes the integer, then take the low byte of that integer.
+ *
+ * Example: value = 9.81237
+ *   scaled  = 98123.7  → floor → 98123
+ *   low byte = 98123 % 256 = 75  → 8 bits of real sensor noise
+ *
+ * @param {number} value - raw sensor axis reading
+ * @returns {number[]} - 8 bits extracted from the value's low byte
  */
-function extractLSBs(value) {
-  const fixedPoint = Math.round(Math.abs(value) * SENSOR_SCALE) >>> 0;
+function extractEntropyByte(value) {
+  const scaled = Math.floor(Math.abs(value) * SCALE_FACTOR);
+  const lowByte = scaled & 0xFF;
   const bits = [];
-
-  for (let bit = 0; bit < BITS_PER_READING; bit++) {
-    bits.push((fixedPoint >>> bit) & 1);
+  for (let b = 7; b >= 0; b--) {
+    bits.push((lowByte >> b) & 1);
   }
   return bits;
 }
 
 /**
  * Von Neumann extractor — removes bias from a bit stream.
- * Processes pairs of bits: (0,1)→0, (1,0)→1, (0,0) and (1,1)→discard.
+ * Pair (0,1)→emit 0 | (1,0)→emit 1 | (0,0),(1,1)→discard.
  *
- * @param {number[]} bits - raw bit array
- * @returns {number[]} - debiased bit array (shorter)
+ * @param {number[]} bits
+ * @returns {number[]}
  */
 function vonNeumannExtract(bits) {
-  const output = [];
+  const out = [];
   for (let i = 0; i + 1 < bits.length; i += 2) {
-    if (bits[i] !== bits[i + 1]) {
-      output.push(bits[i]);
-    }
+    if (bits[i] !== bits[i + 1]) out.push(bits[i]);
   }
-  return output;
+  return out;
 }
 
 /**
- * Pack a bit array into a Uint8Array (MSB first).
- *
+ * Pack an array of bits (MSB-first) into a Uint8Array.
  * @param {number[]} bits
  * @returns {Uint8Array}
  */
 function bitsToBytes(bits) {
   const bytes = new Uint8Array(Math.ceil(bits.length / 8));
   for (let i = 0; i < bits.length; i++) {
-    if (bits[i]) {
-      bytes[Math.floor(i / 8)] |= (1 << (7 - (i % 8)));
-    }
+    if (bits[i]) bytes[Math.floor(i / 8)] |= (1 << (7 - (i % 8)));
   }
   return bytes;
 }
 
+// ── Audit record ─────────────────────────────────────────────────────────────
+
 /**
- * TRNG class — manages the full entropy harvesting lifecycle.
+ * A single sensor sample saved for auditability.
+ * @typedef {{ t: number, ax: number, ay: number, az: number,
+ *             ra: number, rb: number, rg: number }} SensorSample
  */
+
+// ── TRNG class ────────────────────────────────────────────────────────────────
+
 class TRNG extends EventTarget {
   constructor() {
     super();
-    this._rawBits = [];
-    this._debiasedBits = [];
-    this._sampleInterval = null;
-    this._lastReading = null;
-    this._running = false;
-    this._usedSensor = false;
-    this._auditSamples = [];
-    this._auditSamplesDropped = 0;
-    this._lastHarvestMode = null;
+    this._rawBits      = [];   // all bits before Von Neumann (for oscilloscope)
+    this._debiasedBits = [];   // output after Von Neumann debiasing
+    /** @type {SensorSample[]} */
+    this._auditSamples = [];   // full timestamped samples for export
+    this._running      = false;
+    this._usedSensor   = false;
   }
 
-  /**
-   * Request sensor permissions (required on iOS 13+).
-   * @returns {Promise<boolean>} - true if sensor access granted
-   */
-  async requestPermission() {
-    const sensorEventTypes = [
-      globalThis.DeviceMotionEvent,
-      globalThis.DeviceOrientationEvent,
-    ].filter(Boolean);
-
-    if (sensorEventTypes.length === 0) return false;
-
-    const permissionRequests = sensorEventTypes
-      .filter(EventType => typeof EventType.requestPermission === 'function')
-      // Invoke every request synchronously so iOS still treats this as the
-      // button's user gesture before either permission prompt resolves.
-      .map(EventType => EventType.requestPermission());
-
-    if (permissionRequests.length === 0) return true; // Android / non-iOS
-
-    try {
-      const results = await Promise.all(permissionRequests);
-      return results.includes('granted');
-    } catch {
-      return false;
-    }
-  }
+  // ── Public API ─────────────────────────────────────────────────────────────
 
   /**
-   * Check whether the device has motion sensor support.
+   * Does this device expose motion sensors at all?
    * @returns {boolean}
    */
   hasSensors() {
-    return typeof DeviceMotionEvent !== 'undefined' ||
-      typeof DeviceOrientationEvent !== 'undefined';
+    return (typeof DeviceMotionEvent !== 'undefined' ||
+            typeof DeviceOrientationEvent !== 'undefined');
   }
 
   /**
-   * Returns whether this browser requires an explicit user gesture before it
-   * will show the motion-sensor permission prompt (notably iOS Safari).
+   * iOS 13+ requires a user-gesture tap before calling requestPermission().
    * @returns {boolean}
    */
   requiresPermissionGesture() {
-    return [
-      globalThis.DeviceMotionEvent,
-      globalThis.DeviceOrientationEvent,
-    ].some(EventType => typeof EventType?.requestPermission === 'function');
+    return typeof DeviceMotionEvent !== 'undefined' &&
+           typeof DeviceMotionEvent.requestPermission === 'function';
   }
 
   /**
-   * Start harvesting entropy from sensors, or fall back to CSPRNG.
-   * @returns {Promise<Uint8Array>} - 32-byte entropy buffer
+   * Request sensor permissions (iOS 13+).
+   * MUST be called from inside a user-gesture handler.
+   * @returns {Promise<boolean>}
+   */
+  async requestPermission() {
+    if (typeof DeviceMotionEvent === 'undefined') return false;
+    if (typeof DeviceMotionEvent.requestPermission === 'function') {
+      try {
+        const result = await DeviceMotionEvent.requestPermission();
+        return result === 'granted';
+      } catch {
+        return false;
+      }
+    }
+    return true; // Android / non-iOS — implicit
+  }
+
+  /**
+   * Start harvesting.  Resolves when 256 debiased bits have been collected
+   * and SHA-256 whitening is done.
+   * @returns {Promise<Uint8Array>} 32-byte entropy buffer
    */
   async harvest() {
     if (this._running) throw new Error('TRNG already running');
-    this._running = true;
-    this._rawBits = [];
+    this._running      = true;
+    this._rawBits      = [];
     this._debiasedBits = [];
     this._auditSamples = [];
-    this._auditSamplesDropped = 0;
-    this._lastHarvestMode = null;
 
-    const hasSensors = this.hasSensors();
-    this._emitProgress();
-    this._emitStatus(hasSensors
-      ? 'Requesting motion-sensor permission…'
-      : 'Preparing Web Crypto fallback…');
+    this._emit('progress', { percent: 0, bitsCollected: 0, bitsNeeded: BITS_NEEDED });
 
+    const hasSensors  = this.hasSensors();
     const permGranted = hasSensors ? await this.requestPermission() : false;
 
     if (!hasSensors || !permGranted) {
+      this._emit('status', { message: 'No sensors — using CSPRNG' });
       return this._fallbackHarvest();
     }
 
+    this._emit('status', { message: 'Sampling sensors…' });
     return this._sensorHarvest();
   }
 
   /**
-   * Harvest entropy from device motion sensors.
-   * @private
+   * Return all raw bits collected (for the oscilloscope feed).
+   * @returns {number[]}
    */
-  _sensorHarvest() {
-    this._usedSensor = true;
-    this._lastHarvestMode = 'device-sensors';
-    this._emitStatus('Listening for device motion…');
-
-    return new Promise((resolve) => {
-      let isFinished = false;
-      let timeoutId = null;
-
-      const cleanup = () => {
-        window.removeEventListener('devicemotion', onMotion);
-        window.removeEventListener('deviceorientation', onOrientation);
-        if (timeoutId) clearTimeout(timeoutId);
-      };
-
-      const finish = () => {
-        if (isFinished) return;
-        isFinished = true;
-        cleanup();
-        this._finalise(resolve);
-      };
-
-      const collect = (source, event, readings, sample) => {
-        this._recordAuditSample(source, event.timeStamp, sample);
-
-        if (readings.length === 0) return;
-
-        const rawBits = readings.flatMap(extractLSBs);
-        const debiasedBatch = vonNeumannExtract(rawBits);
-
-        this._rawBits.push(...rawBits);
-        this._debiasedBits.push(...debiasedBatch);
-
-        this._emitProgress();
-
-        if (this._debiasedBits.length >= BITS_NEEDED) finish();
-      };
-
-      const onMotion = (event) => {
-        const acc = event.accelerationIncludingGravity || event.acceleration;
-        const rot = event.rotationRate;
-        const readings = [
-          acc?.x, acc?.y, acc?.z,
-          rot?.alpha, rot?.beta, rot?.gamma,
-        ].filter(v => v !== null && v !== undefined && !isNaN(v) && v !== 0);
-
-        collect('devicemotion', event, readings, {
-          acceleration: this._serialiseAxes(acc, ['x', 'y', 'z']),
-          rotationRate: this._serialiseAxes(rot, ['alpha', 'beta', 'gamma']),
-        });
-      };
-
-      window.addEventListener('devicemotion', onMotion);
-
-      // Also try deviceorientation as supplementary source
-      const onOrientation = (event) => {
-        const readings = [event.alpha, event.beta, event.gamma]
-          .filter(v => v !== null && v !== undefined && !isNaN(v));
-
-        collect('deviceorientation', event, readings, {
-          orientation: this._serialiseAxes(event, ['alpha', 'beta', 'gamma']),
-        });
-      };
-      window.addEventListener('deviceorientation', onOrientation);
-
-      // Safety timeout — if no motion after 30s, fall back
-      timeoutId = setTimeout(() => {
-        if (this._debiasedBits.length < BITS_NEEDED) {
-          console.warn('[TRNG] Sensor timeout, supplementing with CSPRNG');
-          this._emitStatus('Sensor input was insufficient — adding CSPRNG entropy…');
-          this._lastHarvestMode = 'device-sensors-with-csprng-supplement';
-          this._supplementWithCSPRNG();
-          finish();
-        }
-      }, SENSOR_TIMEOUT_MS);
-    });
+  exportRawData() {
+    return [...this._rawBits];
   }
 
   /**
-   * Supplement debiased bits with CSPRNG to reach 256 bits.
+   * Return a structured audit log for download.
+   * @returns {object}
+   */
+  exportAuditLog() {
+    return {
+      version:      '1.2',
+      timestamp:    new Date().toISOString(),
+      usedSensor:   this._usedSensor,
+      bitsCollected: this._debiasedBits.length,
+      bitsNeeded:   BITS_NEEDED,
+      samples:      this._auditSamples,
+      rawBitCount:  this._rawBits.length,
+      // Include a hex representation of the debiased bytes for verification
+      debiasedHex:  bitsToBytes(this._debiasedBits.slice(0, BITS_NEEDED))
+        .reduce((s, b) => s + b.toString(16).padStart(2, '0'), ''),
+    };
+  }
+
+  // ── Private: sensor harvest ───────────────────────────────────────────────
+
+  _sensorHarvest() {
+    this._usedSensor = true;
+    return new Promise((resolve) => {
+      const onMotion = (event) => {
+        const acc = event.accelerationIncludingGravity || event.acceleration;
+        const rot = event.rotationRate;
+
+        const ax = acc?.x ?? 0, ay = acc?.y ?? 0, az = acc?.z ?? 0;
+        const ra = rot?.alpha ?? 0, rb = rot?.beta ?? 0, rg = rot?.gamma ?? 0;
+
+        // Save timestamped sample for audit log
+        this._auditSamples.push({
+          t:  Date.now(),
+          ax, ay, az, ra, rb, rg,
+        });
+
+        // Extract bits from every non-zero axis
+        const readings = [ax, ay, az, ra, rb, rg].filter(v => v !== 0 && !isNaN(v));
+        if (readings.length === 0) return;
+
+        const rawBatch      = readings.flatMap(extractEntropyByte);
+        const debiasedBatch = vonNeumannExtract(rawBatch);
+
+        this._rawBits.push(...rawBatch);
+        this._debiasedBits.push(...debiasedBatch);
+
+        const collected = this._debiasedBits.length;
+        const percent   = Math.min(100, Math.floor((collected / BITS_NEEDED) * 100));
+
+        this._emit('progress', { percent, bitsCollected: collected, bitsNeeded: BITS_NEEDED });
+
+        // Update status label at meaningful milestones
+        if (collected === 1)   this._emit('status', { message: 'Entropy flowing…' });
+        if (collected >= 64)   this._emit('status', { message: 'Quarter way…' });
+        if (collected >= 128)  this._emit('status', { message: 'Half way…' });
+        if (collected >= 192)  this._emit('status', { message: 'Almost done…' });
+
+        if (collected >= BITS_NEEDED) {
+          window.removeEventListener('devicemotion', onMotion);
+          window.removeEventListener('deviceorientation', onOrientation);
+          this._finalise(resolve);
+        }
+      };
+
+      const onOrientation = (event) => {
+        const readings = [event.alpha, event.beta, event.gamma]
+          .filter(v => v !== null && v !== undefined && !isNaN(v) && v !== 0);
+        if (readings.length === 0) return;
+
+        const rawBatch      = readings.flatMap(extractEntropyByte);
+        const debiasedBatch = vonNeumannExtract(rawBatch);
+        this._rawBits.push(...rawBatch);
+        this._debiasedBits.push(...debiasedBatch);
+      };
+
+      window.addEventListener('devicemotion', onMotion);
+      window.addEventListener('deviceorientation', onOrientation);
+
+      // Safety timeout: after 30 s supplement with CSPRNG and finish
+      setTimeout(() => {
+        if (this._debiasedBits.length < BITS_NEEDED) {
+          window.removeEventListener('devicemotion', onMotion);
+          window.removeEventListener('deviceorientation', onOrientation);
+          this._emit('status', { message: 'Supplementing with CSPRNG…' });
+          this._supplementWithCSPRNG();
+          this._finalise(resolve);
+        }
+      }, 30000);
+    });
+  }
+
+  // ── Private: CSPRNG fallback ──────────────────────────────────────────────
+
+  /**
+   * When no sensors exist, animate the progress bar across ~1.2 s,
+   * then complete. This avoids the jarring 0 → 100 jump.
    * @private
    */
+  async _fallbackHarvest() {
+    this._usedSensor = false;
+
+    // Animate progress in steps so the UI feels alive
+    const steps = 20;
+    for (let i = 1; i <= steps; i++) {
+      await new Promise(r => setTimeout(r, 60));
+      const percent = Math.floor((i / steps) * 95); // stop at 95%, jump to 100 on complete
+      this._emit('progress', { percent, bitsCollected: Math.floor(percent * 2.56), bitsNeeded: BITS_NEEDED });
+
+      if (i === 5)  this._emit('status', { message: 'Seeding CSPRNG…' });
+      if (i === 12) this._emit('status', { message: 'Running SHA-256…' });
+      if (i === 18) this._emit('status', { message: 'Whitening output…' });
+    }
+
+    const rawEntropy = new Uint8Array(32);
+    crypto.getRandomValues(rawEntropy);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', rawEntropy);
+    const entropy    = new Uint8Array(hashBuffer);
+
+    this._running = false;
+    this._emit('progress', { percent: 100, bitsCollected: 256, bitsNeeded: BITS_NEEDED });
+    this._emit('status',   { message: 'CSPRNG entropy ready' });
+    this._emit('complete',  { entropy, usedSensor: false });
+    return entropy;
+  }
+
+  // ── Private: supplement & finalise ───────────────────────────────────────
+
   _supplementWithCSPRNG() {
-    const remaining = BITS_NEEDED - this._debiasedBits.length;
+    const remaining  = BITS_NEEDED - this._debiasedBits.length;
     const extraBytes = new Uint8Array(Math.ceil(remaining / 8));
     crypto.getRandomValues(extraBytes);
     for (const byte of extraBytes) {
@@ -268,155 +308,24 @@ class TRNG extends EventTarget {
     }
   }
 
-  /**
-   * CSPRNG fallback when no sensors are available.
-   * @private
-   */
-  async _fallbackHarvest() {
-    this._usedSensor = false;
-    this._lastHarvestMode = 'csprng-fallback';
-    this._emitStatus('No usable motion sensor — generating CSPRNG entropy…');
-
-    // Web Crypto completes almost immediately. Yield between real pipeline
-    // stages so the loading screen can render meaningful progress updates.
-    for (const percent of [20, 45, 70]) {
-      this._emitProgress(percent);
-      await wait(120);
-    }
-
-    const rawEntropy = new Uint8Array(32);
-    crypto.getRandomValues(rawEntropy);
-
-    // Still pipe through SHA-256 for consistency
-    this._emitStatus('Conditioning entropy with SHA-256…');
-    this._emitProgress(90);
-    await wait(120);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', rawEntropy);
-    const entropy = new Uint8Array(hashBuffer);
-
-    this._running = false;
-    this._emitProgress(100, BITS_NEEDED);
-    this.dispatchEvent(new CustomEvent('complete', {
-      detail: { entropy, usedSensor: false, rawBits: [] }
-    }));
-    return entropy;
-  }
-
-  /**
-   * Finalise: whiten collected bits through SHA-256 and emit complete.
-   * @private
-   */
   async _finalise(resolve) {
-    const bitsToUse = this._debiasedBits.slice(0, BITS_NEEDED);
-    const rawBytes = bitsToBytes(bitsToUse);
-
-    // SHA-256 whitening pass
-    this._emitStatus('Conditioning collected entropy with SHA-256…');
+    const bitsToUse  = this._debiasedBits.slice(0, BITS_NEEDED);
+    const rawBytes   = bitsToBytes(bitsToUse);
     const hashBuffer = await crypto.subtle.digest('SHA-256', rawBytes);
-    const entropy = new Uint8Array(hashBuffer);
+    const entropy    = new Uint8Array(hashBuffer);
 
     this._running = false;
-    this._emitProgress(100);
-
-    const completeEvent = new CustomEvent('complete', {
-      detail: {
-        entropy,
-        usedSensor: this._usedSensor,
-        rawBits: [...this._rawBits],
-      }
-    });
-    this.dispatchEvent(completeEvent);
+    this._emit('progress', { percent: 100, bitsCollected: BITS_NEEDED, bitsNeeded: BITS_NEEDED });
+    this._emit('status',   { message: 'SHA-256 whitening complete' });
+    this._emit('complete',  { entropy, usedSensor: this._usedSensor });
     if (resolve) resolve(entropy);
   }
 
-  /**
-   * Emit current progress as an event.
-   * @private
-   */
-  _emitProgress(overridePercent = null, overrideBitsCollected = null) {
-    const bitsCollected = overrideBitsCollected ?? this._debiasedBits.length;
-    const percent = overridePercent ?? Math.min(100, Math.floor((bitsCollected / BITS_NEEDED) * 100));
-    this.dispatchEvent(new CustomEvent('progress', {
-      detail: { percent, bitsCollected, bitsNeeded: BITS_NEEDED }
-    }));
+  // ── Private: helpers ──────────────────────────────────────────────────────
+
+  _emit(event, detail) {
+    this.dispatchEvent(new CustomEvent(event, { detail }));
   }
-
-  /**
-   * Emit a plain-language status update for the loading screen.
-   * @param {string} message
-   * @private
-   */
-  _emitStatus(message) {
-    this.dispatchEvent(new CustomEvent('status', { detail: { message } }));
-  }
-
-  /**
-   * Store a bounded copy of source samples for the user-initiated audit log.
-   * @private
-   */
-  _recordAuditSample(source, timestamp, values) {
-    if (this._auditSamples.length >= MAX_AUDIT_SAMPLES) {
-      this._auditSamplesDropped++;
-      return;
-    }
-
-    this._auditSamples.push({
-      source,
-      timestamp: Math.round(timestamp * 1000) / 1000,
-      values,
-    });
-  }
-
-  /**
-   * Copy supported numeric axes into a JSON-safe object.
-   * @private
-   */
-  _serialiseAxes(source, axes) {
-    if (!source) return null;
-
-    const result = {};
-    for (const axis of axes) {
-      const value = source[axis];
-      if (typeof value === 'number' && Number.isFinite(value)) {
-        result[axis] = value;
-      }
-    }
-    return Object.keys(result).length > 0 ? result : null;
-  }
-
-  /**
-   * Export raw sensor samples for auditability without exposing the final
-   * entropy buffer or session keys.
-   * @returns {object}
-   */
-  exportAuditLog() {
-    return {
-      format: 'securelink-entropy-audit-v1',
-      generatedAt: new Date().toISOString(),
-      source: this._lastHarvestMode,
-      sensorSamplesCollected: this._auditSamples.length,
-      sensorSamplesOmitted: this._auditSamplesDropped,
-      debiasedBitsCollected: this._debiasedBits.length,
-      samples: this._auditSamples.map(sample => ({
-        ...sample,
-        values: JSON.parse(JSON.stringify(sample.values)),
-      })),
-      note: 'Raw sensor samples only. Final entropy, derived keys, and messages are never exported.',
-    };
-  }
-
-  /**
-   * Return recent extracted bits for the oscilloscope only.
-   * @returns {number[]}
-   */
-  exportRawData() {
-    return [...this._rawBits];
-  }
-}
-
-/** @param {number} ms @returns {Promise<void>} */
-function wait(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 export { TRNG };

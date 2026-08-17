@@ -2,9 +2,9 @@
  * crypto.js — Cryptographic Engine
  *
  * Responsibilities:
- *   1. ECDH P-256 key pair generation (private key seeded with TRNG entropy via HKDF)
+ *   1. ECDH P-256 key pair generation using the browser's CSPRNG
  *   2. Public key serialisation / deserialisation (SPKI format → base64)
- *   3. Shared AES-GCM key derivation from ECDH shared secret + HKDF
+ *   3. Shared AES-GCM key derivation from ECDH + a canonical public-key transcript
  *   4. Message encryption: AES-GCM-256, random 96-bit IV prepended per message
  *   5. Message decryption
  *
@@ -13,6 +13,8 @@
 
 const AES_KEY_LENGTH = 256;
 const IV_LENGTH_BYTES = 12; // 96-bit IV for AES-GCM
+const SESSION_KDF_INFO = 'securelink-session-v2';
+const TRANSCRIPT_LABEL = 'securelink-ecdh-transcript-v2';
 
 /**
  * CryptoEngine manages the full cryptographic lifecycle for one session.
@@ -23,49 +25,42 @@ class CryptoEngine {
     this._ecdhKeyPair = null;
     /** @type {CryptoKey|null} */
     this._aesKey = null;
+    /** @type {string|null} */
+    this._publicKeyBase64 = null;
     /** @type {boolean} */
     this._ready = false;
   }
 
   /**
-   * Generate an ECDH key pair. The entropy from the TRNG is used as HKDF
-   * input to seed the derivation of a deterministic private key scalar,
-   * providing a TRNG-seeded ECDH key pair.
+   * Generate an ephemeral ECDH key pair. Web Crypto sources the private-key
+   * randomness from the browser/operating-system CSPRNG.
    *
-   * Note: The Web Crypto API does not expose raw ECDH private key import
-   * for P-256 on all browsers. We instead use the TRNG entropy to derive
-   * an AES-GCM wrapping key, generate a standard ECDH pair, then mix the
-   * ECDH shared secret with the TRNG entropy via HKDF for the final session
-   * key. This provides both hardware entropy AND forward-secure ECDH.
-   *
-   * @param {Uint8Array} trngEntropy - 32-byte entropy from TRNG
    * @returns {Promise<string>} - base64-encoded SPKI public key
    */
-  async generateKeyPair(trngEntropy) {
-    // 1. Generate ephemeral ECDH key pair (browser-generated randomness)
+  async generateKeyPair() {
     this._ecdhKeyPair = await crypto.subtle.generateKey(
       { name: 'ECDH', namedCurve: 'P-256' },
       true,
       ['deriveKey', 'deriveBits']
     );
 
-    // 2. Store TRNG entropy for mixing into final key derivation
-    this._trngEntropy = trngEntropy;
-
-    // 3. Export public key for transmission to peer
     const pubKeyBuffer = await crypto.subtle.exportKey('spki', this._ecdhKeyPair.publicKey);
-    return arrayBufferToBase64(pubKeyBuffer);
+    this._publicKeyBase64 = arrayBufferToBase64(pubKeyBuffer);
+    return this._publicKeyBase64;
   }
 
   /**
-   * Derive the shared AES-GCM session key using:
-   *   ECDH shared secret XOR-mixed with TRNG entropy via HKDF-SHA-256
+   * Derive the shared AES-GCM session key from the ECDH secret with a
+   * deterministic transcript hash as the HKDF salt. Both peers have the same
+   * ECDH output and canonical transcript, so they derive the same AES key.
    *
    * @param {string} peerPublicKeyBase64 - peer's base64-encoded SPKI public key
    * @returns {Promise<void>}
    */
   async deriveSharedKey(peerPublicKeyBase64) {
-    if (!this._ecdhKeyPair) throw new Error('Key pair not generated yet');
+    if (!this._ecdhKeyPair || !this._publicKeyBase64) {
+      throw new Error('Key pair not generated yet');
+    }
 
     // 1. Import peer's public key
     const peerPubKeyBuffer = base64ToArrayBuffer(peerPublicKeyBase64);
@@ -84,21 +79,21 @@ class CryptoEngine {
       256
     );
 
-    // 3. XOR ECDH shared secret with TRNG entropy to bind hardware randomness
-    const ecdhBytes = new Uint8Array(sharedSecretBits);
-    const mixed = new Uint8Array(32);
-    for (let i = 0; i < 32; i++) {
-      mixed[i] = ecdhBytes[i] ^ (this._trngEntropy[i] ?? 0);
-    }
+    // 3. Hash a canonical transcript of both public keys. The transcript is
+    // public, but binds this derived key to this exact ECDH exchange.
+    const transcript = [this._publicKeyBase64, peerPublicKeyBase64]
+      .sort()
+      .map(key => `${key.length}:${key}`)
+      .join('|');
+    const transcriptBytes = new TextEncoder().encode(`${TRANSCRIPT_LABEL}|${transcript}`);
+    const saltBuffer = await crypto.subtle.digest('SHA-256', transcriptBytes);
 
-    // 4. HKDF-SHA-256 to derive final 256-bit AES key material
-    //    info = "e2ee-chat-trng-session-v1"
+    // 4. HKDF-SHA-256 derives the final 256-bit AES key from shared material.
     const hkdfBaseKey = await crypto.subtle.importKey(
-      'raw', mixed, { name: 'HKDF' }, false, ['deriveKey']
+      'raw', sharedSecretBits, { name: 'HKDF' }, false, ['deriveKey']
     );
 
-    const saltBuffer = new TextEncoder().encode('e2ee-chat-trng-salt-v1');
-    const infoBuffer = new TextEncoder().encode('e2ee-chat-trng-session-v1');
+    const infoBuffer = new TextEncoder().encode(SESSION_KDF_INFO);
 
     this._aesKey = await crypto.subtle.deriveKey(
       {
@@ -114,12 +109,6 @@ class CryptoEngine {
     );
 
     this._ready = true;
-
-    // Clear TRNG entropy from memory now that key is derived
-    if (this._trngEntropy) {
-      this._trngEntropy.fill(0);
-      this._trngEntropy = null;
-    }
   }
 
   /**
@@ -186,7 +175,7 @@ class CryptoEngine {
   destroy() {
     this._ecdhKeyPair = null;
     this._aesKey = null;
-    this._trngEntropy = null;
+    this._publicKeyBase64 = null;
     this._ready = false;
   }
 }

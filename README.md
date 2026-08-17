@@ -1,9 +1,9 @@
-# 🔐 SecureLink — Serverless P2P E2EE Chat with Hardware TRNG
+# 🔐 SecureLink — Serverless P2P E2EE Chat
 
 [![CI / Deploy](https://github.com/deeyeti/e2ee-chat-trng/actions/workflows/deploy.yml/badge.svg)](https://github.com/deeyeti/e2ee-chat-trng/actions/workflows/deploy.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-7b2fff.svg)](LICENSE)
 
-> **A serverless, peer-to-peer, end-to-end encrypted chat application where encryption keys are derived from true physical entropy harvested from your device's motion sensors.**
+> **A serverless, peer-to-peer, end-to-end encrypted chat application using browser Web Crypto for ephemeral key generation and ECDH session establishment. Device motion collection is optional and auditable.**
 
 🌐 **Live App**: [https://deeyeti.github.io/e2ee-chat-trng](https://deeyeti.github.io/e2ee-chat-trng)
 <img width="1919" height="893" alt="image" src="https://github.com/user-attachments/assets/d6c94d82-6f91-4152-a631-5c78e8d0139d" />
@@ -20,11 +20,11 @@
 
 | Feature | Detail |
 |---|---|
-| **True Hardware TRNG** | Extracts least-significant bits from accelerometer/gyroscope sensor readings |
-| **Von Neumann Debiasing** | Removes correlation and bias from the raw sensor bit stream |
-| **SHA-256 Whitening** | Final cryptographic hash pass over collected entropy |
-| **ECDH P-256 Key Exchange** | Ephemeral Diffie-Hellman key pair per session |
-| **HKDF-SHA-256 KDF** | Mixes ECDH shared secret with TRNG entropy for the final AES key |
+| **Device Entropy Audit** | Collects and exports motion samples for user-visible diagnostics and audit |
+| **Von Neumann Debiasing** | Reduces bias in the collected sensor bit stream |
+| **SHA-256 Whitening** | Conditions the captured sensor stream for audit reporting |
+| **ECDH P-256 Key Exchange** | Browser-CSPRNG-generated ephemeral Diffie-Hellman key pair per session |
+| **HKDF-SHA-256 KDF** | Derives the AES key from the shared ECDH secret and canonical public-key transcript |
 | **AES-GCM-256 E2EE** | Every message encrypted with a fresh 96-bit random IV |
 | **WebRTC P2P** | Direct browser-to-browser via PeerJS signaling (signaling server dropped after handshake) |
 | **Zero-Knowledge** | No keys, messages, or metadata ever touch `localStorage`, `sessionStorage`, or IndexedDB |
@@ -38,7 +38,7 @@
 ```
 Browser A (Initiator)                    Browser B (Joiner)
 ┌─────────────────────────┐              ┌─────────────────────────┐
-│  1. TRNG harvest        │              │  1. TRNG harvest        │
+│  1. Device audit sample │              │  1. Device audit sample │
 │     LSB extraction      │              │     LSB extraction      │
 │     Von Neumann debias  │              │     Von Neumann debias  │
 │     SHA-256 whitening   │              │     SHA-256 whitening   │
@@ -62,41 +62,41 @@ Browser A (Initiator)                    Browser B (Joiner)
 
 ## 🔑 Cryptographic Pipeline
 
-### Step 1 — TRNG Entropy Extraction
+### Step 1 — Optional Device Entropy Collection
 
 ```
 Sensor readings (60 Hz)
     │
     ▼
-Extract decimal digits 4–7 (LSBs — thermal + quantization noise)
-    │  X-axis: 9.812345[6789...]  →  bits: 0110...
-    │  Y-axis: 0.234567[8901...]  →  bits: 1010...
-    │  Z-axis: 1.987654[3210...]  →  bits: 0101...
+Scale sensor readings to fixed point and extract low-order binary bits
+    │  X-axis: 9.812 → 9812 → bits: 0100...
+    │  Y-axis: 0.235 → 235  → bits: 1011...
+    │  Z-axis: 1.988 → 1988 → bits: 0100...
     ▼
 Von Neumann extractor (removes bias)
     │  (0,1) → emit 0  |  (1,0) → emit 1  |  (0,0),(1,1) → discard
     ▼
 Accumulate 256 debiased bits
     ▼
-SHA-256(raw_bytes) → 32-byte conditioned entropy
+SHA-256(raw_bytes) → conditioned audit sample
 ```
+
+> Device samples drive the progress display and optional audit log. They never alter a shared session key unless both peers possess the same material.
 
 ### Step 2 — Key Exchange
 
 ```
-TRNG Entropy (32 bytes)
+Browser CSPRNG → ephemeral ECDH P-256 key pair
     │
-    ├─── ECDH P-256 keygen (browser CSPRNG + entropy mixing)
-    │         │
     │    Public Key ──── over WebRTC DataChannel ────► Peer
     │         ◄─── Peer's Public Key ─────────────────
     │
     ▼
-ECDH Shared Secret (256 bits)
+ECDH Shared Secret (256 bits) + sorted pair of public keys
     │
-XOR with TRNG entropy
+SHA-256(public-key transcript) → HKDF salt
     │
-HKDF-SHA-256(salt, info: "e2ee-chat-trng-session-v1")
+HKDF-SHA-256(shared secret, transcript salt, info: "securelink-session-v2")
     │
     ▼
 AES-GCM-256 Session Key (non-extractable CryptoKey)
@@ -173,8 +173,8 @@ python -m http.server 8080
 
 | Requirement | Detail |
 |---|---|
-| **TRNG mode** | Mobile/tablet with accelerometer + gyroscope |
-| **Fallback mode** | Desktop — uses `crypto.getRandomValues()` CSPRNG with SHA-256 whitening |
+| **Device audit mode** | Mobile/tablet with accelerometer or gyroscope; optional on supported laptops |
+| **Key generation** | All devices — browser Web Crypto CSPRNG and ephemeral ECDH |
 | **Browser** | Chrome 90+, Firefox 90+, Safari 15+ |
 | **Connection** | Both peers need internet for WebRTC signaling (via PeerJS) |
 
@@ -184,6 +184,8 @@ python -m http.server 8080
 
 - **Session isolation**: Every session generates unique ephemeral ECDH keys. No key reuse.
 - **Forward secrecy**: ECDH keys are ephemeral — a compromised session does not expose other sessions.
+- **Shared derivation**: The AES key is derived only from the shared ECDH secret and a deterministic public-key transcript, so both peers calculate the same key.
+- **Device samples**: Local motion samples remain local/auditable and are never mixed asymmetrically into a shared key.
 - **Zero-knowledge**: Keys exist only in JavaScript heap memory. Closing the tab destroys all key material.
 - **DTLS + AES-GCM**: Double-layer encryption (WebRTC DTLS transport + AES-GCM application layer).
 - **No signaling data**: The PeerJS signaling server only sees your peer ID and SDP — never any messages or keys.
@@ -192,7 +194,28 @@ python -m http.server 8080
 
 ## 📋 Changelog
 
-### Unreleased
+### v1.3.0 — TRNG Engine Overhaul & UI Bug Fixes
+
+**Bug fixes**
+- **All-zeros entropy on phones (critical):** Replaced fixed digit-position string slicing (`digits[4-7]`) with modular integer arithmetic (`Math.floor(|value| × 1e4) & 0xFF`). Mobile sensors typically only return 3–4 decimal places so positions 4+ were always `undefined → 0`, producing 256 bits of zeros. New method extracts real sensor noise regardless of decimal precision.
+- **Progress bar 0→100 jump (fallback path):** CSPRNG fallback now animates across 20 steps over ~1.2 s with live status labels (`Seeding CSPRNG…` → `SHA-256 whitening…`).
+- **Progress bar 0→100 jump (sensor path):** Progress events are now emitted on every `devicemotion` callback, not only when milestones are crossed.
+
+**New TRNG features**
+- `requiresPermissionGesture()` — detects iOS 13+ before asking for permission so the call is always inside a user gesture.
+- `exportAuditLog()` — structured JSON export with version, timestamp, axis-named samples (`ax, ay, az, ra, rb, rg`), bit counts, and a hex preview of the debiased bytes. Replaces bare `rawBits` array.
+- `status` events at meaningful milestones: `Entropy flowing…`, `Half way…`, `SHA-256 whitening complete`, etc.
+- Safety timeout unchanged at 30 s; supplements with CSPRNG and emits a `status` event before finalising.
+
+---
+
+### v1.2.0 — Corrected Session Key Derivation
+
+
+**Security**
+- Removed asymmetric local-entropy mixing that could make peers derive different AES session keys.
+- Derive the session key from the shared ECDH secret and a SHA-256 hash of the canonical public-key transcript via HKDF-SHA-256.
+- Generate ephemeral ECDH keys exclusively through the browser/operating-system CSPRNG.
 
 **Entropy collection & auditability**
 - Fixed live entropy progress on orientation-only devices and added clear collection-stage status updates.

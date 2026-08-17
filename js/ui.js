@@ -119,7 +119,7 @@ class UIController {
     const status = document.getElementById('trng-status');
     const startButton = document.getElementById('btn-start-entropy');
     if (status) {
-      status.textContent = usedSensor ? 'Hardware entropy captured' : 'CSPRNG entropy ready';
+      status.textContent = usedSensor ? 'Device samples captured' : 'CSPRNG audit sample ready';
       status.className = 'trng-complete';
     }
     if (startButton) startButton.hidden = true;
