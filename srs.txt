@@ -1,0 +1,86 @@
+# Software Requirements Specification (SRS)
+
+**Project:** Serverless P2P E2EE Chat with Hardware-Based TRNG
+**Platform:** Web Application (GitHub Pages)
+**Version:** 1.0
+
+---
+
+## 1. Introduction
+
+### 1.1 Purpose
+
+This document specifies the software requirements for a serverless, peer-to-peer (P2P) chat application. The application will be statically hosted on GitHub Pages, utilize WebRTC for direct communication, and feature End-to-End Encryption (E2EE) using keys generated from a True Random Number Generator (TRNG) that harvests physical entropy from the user's local device sensors (gyroscope/accelerometer).
+
+### 1.2 Scope
+
+The application will provide secure, decentralized communication for two users. Because it is hosted on GitHub Pages, the architecture completely eliminates backend routing servers. The core innovations of this project are:
+
+1. **Decentralized Signaling & Connection:** Using WebRTC to establish a direct tunnel between two browsers.
+2. **Hardware-Level Cryptography in the Browser:** Building a custom TRNG pipeline that extracts thermal and quantization noise from device motion sensors to generate cryptographically secure AES-GCM keys.
+
+---
+
+## 2. System Architecture
+
+### 2.1 Hosting & Delivery
+
+* The application must consist entirely of static files (HTML, CSS, JavaScript).
+* The application will be deployed and served via GitHub Pages over HTTPS.
+
+### 2.2 Network & Communication (WebRTC)
+
+* **Signaling:** The app will use a public signaling server (such as PeerJS) exclusively for the initial exchange of Session Description Protocol (SDP) offers and ICE candidates.
+* **P2P Data Channels:** Once the handshake is complete, the signaling server must be dropped, and all chat data will route directly between the two client browsers via WebRTC Data Channels.
+
+### 2.3 Cryptography & Security
+
+* **Base Encryption:** WebRTC’s default Datagram Transport Layer Security (DTLS) will act as the transport layer encryption.
+* **Application-Layer E2EE:** Message payloads must be additionally encrypted using AES-GCM (via the Web Crypto API) before entering the WebRTC channel.
+* **Key Generation (TRNG):** The AES encryption keys will be derived strictly from the custom hardware entropy harvester.
+
+---
+
+## 3. Functional Requirements
+
+### 3.1 Hardware Entropy Harvester (TRNG)
+
+The application must implement an entropy extraction pipeline to convert raw physical movements into a secure cryptographic key.
+
+* **Sensor Access:** The system must request explicit permissions from the user to access the `DeviceMotionEvent` or `Generic Sensor API` (Gyroscope/Accelerometer).
+* **Sampling:** The system must sample raw high-frequency data into a continuous buffer.
+* **Noise Extraction:** The system must ignore the integer and top decimal parts of the readings and strip out only the noisy least significant bits (LSBs) of the floating-point integers across the $X$, $Y$, and $Z$ axes.
+* **Whitening & De-biasing:** Because raw sensor noise has correlation and bias, the system must pass the raw collected byte stream through a cryptographic hash function (such as SHA-256) or an entropy extraction algorithm (like Von Neumann extraction or HKDF).
+* **Key Construction:** The resulting conditioned digest will act as the 256-bit AES key for the chat session.
+
+### 3.2 Chat & Messaging Functions
+
+* **Connection Initiation:** User A must be able to generate a unique session ID/link and share it out-of-band with User B.
+* **Key Exchange:** Users must perform a secure key exchange (e.g., ECDH) seeded by their respective TRNG outputs to establish a shared AES key.
+* **Message Transmission:** The system must encrypt text input, transmit it over the WebRTC data channel, and decrypt it on the receiving end.
+* **Session Termination:** Closing the browser tab must instantly destroy the local session, dropping the connection and purging the AES keys from the browser's memory.
+
+### 3.3 User Interface (UI)
+
+* **Entropy Visualization:** The UI should feature a live progress bar or visualizer showing the raw sensor data being harvested and processed into a cryptographic hash.
+* **Connection Status:** The UI must clearly indicate the status of the signaling phase, the P2P connection, and the E2EE status.
+* **Chat View:** A standard chat interface (message history, input field, send button).
+
+---
+
+## 4. Non-Functional Requirements
+
+### 4.1 Performance Constraints
+
+* **Throttling Mitigation:** Modern web browsers throttle sensor polling rates (usually capped at 60 Hz for security reasons). The system must account for this by providing a loading state while the buffer fills with enough LSBs to satisfy the 256-bit entropy requirement.
+* **Memory Management:** The application must strictly manage memory (especially the sensor data arrays) to prevent memory leaks in the browser during extended chat sessions.
+
+### 4.2 Security & Privacy
+
+* **Zero-Knowledge Architecture:** No keys, messages, or metadata may be stored in `localStorage`, `sessionStorage`, or IndexedDB. Everything must reside purely in volatile RAM.
+* **Auditable Randomness:** The application should optionally allow the user to export the raw sensor data mapping to verify the physical origin of the entropy.
+
+### 4.3 Compatibility
+
+* **Device Support:** The TRNG generation phase strictly requires a device with built-in accelerometers or gyroscopes (mobile phones, tablets, or supported laptops).
+* **Browser Support:** The application must target modern browsers (Chrome, Firefox, Safari) that fully support WebRTC, the Web Crypto API, and the DeviceOrientation API.

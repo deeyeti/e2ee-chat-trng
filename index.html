@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <!-- SEO -->
+  <title>SecureLink — Serverless E2EE Chat with Hardware TRNG</title>
+  <meta name="description" content="A serverless, peer-to-peer end-to-end encrypted chat application. Encryption keys are generated from true hardware entropy (accelerometer/gyroscope). No servers, no tracking, no storage." />
+  <meta name="keywords" content="E2EE, encrypted chat, P2P, WebRTC, TRNG, hardware entropy, privacy, secure messaging" />
+  <meta name="author" content="SecureLink" />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="SecureLink — Serverless E2EE Chat" />
+  <meta property="og:description" content="Hardware-entropy encrypted P2P chat. No servers. No logs. No traces." />
+  <meta property="og:type" content="website" />
+
+  <!-- PWA / Theme -->
+  <meta name="theme-color" content="#00f5d4" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="css/styles.css" />
+
+  <!-- Favicon (inline SVG data URI) -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23080a10'/><text y='22' x='4' font-size='20'>🔒</text></svg>" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- ── Header ──────────────────────────────────────────── -->
+    <header class="app-header">
+      <div class="logo">
+        <div class="logo-icon">🔐</div>
+        <div>
+          <div class="logo-text">SecureLink</div>
+          <div class="logo-sub">Hardware E2EE · WebRTC · TRNG</div>
+        </div>
+      </div>
+
+      <!-- Status Bar -->
+      <div id="status-bar" class="status-bar status-idle" role="status" aria-live="polite">
+        <span class="status-icon">○</span>
+        <span class="status-text">Not connected</span>
+      </div>
+    </header>
+
+    <!-- ── Main ────────────────────────────────────────────── -->
+    <main class="app-main" id="main-content">
+
+      <!-- ═══════════════════════════════════════════════════
+           PHASE 1: TRNG Entropy Harvesting
+           ═══════════════════════════════════════════════════ -->
+      <section id="section-trng" class="app-section active" aria-label="Entropy Harvesting">
+        <div class="card">
+          <h1 class="card-title">Harvesting Entropy</h1>
+          <p class="card-subtitle">
+            Your device's motion sensors are generating true random bits for your encryption key.
+            Move or shake your device to accelerate collection.
+          </p>
+
+          <!-- Sensor status message -->
+          <div id="sensor-status-msg" class="sensor-status sensor-ok">
+            📡 Checking motion sensors…
+          </div>
+
+          <!-- Oscilloscope visualization -->
+          <div class="oscilloscope-wrapper">
+            <span class="oscilloscope-label">Sensor · LSB Stream</span>
+            <canvas id="oscilloscope" width="600" height="120" aria-label="Live entropy visualization"></canvas>
+          </div>
+
+          <!-- Entropy progress -->
+          <div class="entropy-progress-wrapper">
+            <div class="progress-header">
+              <span class="progress-label">Entropy Buffer</span>
+              <span class="progress-value" id="entropy-percent">0%</span>
+            </div>
+            <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="entropy-progressbar">
+              <div class="progress-bar" id="entropy-bar"></div>
+            </div>
+            <div class="entropy-meta">
+              <span id="bits-collected" class="text-mono text-sm">0 / 256 bits</span>
+              <span id="trng-status" class="text-sm">Sampling…</span>
+            </div>
+          </div>
+
+          <!-- Audit button (SRS §4.2) -->
+          <button id="btn-export-entropy" class="entropy-audit-btn" type="button">
+            Export raw sensor data for auditability ↓
+          </button>
+        </div>
+      </section>
+
+      <!-- ═══════════════════════════════════════════════════
+           PHASE 2: Connect
+           ═══════════════════════════════════════════════════ -->
+      <section id="section-connect" class="app-section" aria-label="Connect to Peer">
+        <div class="card">
+          <h1 class="card-title">Establish Connection</h1>
+          <p class="card-subtitle">
+            Choose your role. Session keys are derived from hardware entropy and never leave your device's RAM.
+          </p>
+
+          <!-- Role picker (shown before role selected) -->
+          <div id="role-picker" class="role-picker">
+            <button id="btn-create-session" class="role-card" type="button" aria-label="Create a new session as host">
+              <div class="role-icon">📡</div>
+              <div class="role-name">Create Session</div>
+              <div class="role-desc">Generate a code and share with your peer</div>
+            </button>
+            <button id="join-role-card" class="role-card" type="button" aria-label="Join an existing session">
+              <div class="role-icon">🔗</div>
+              <div class="role-name">Join Session</div>
+              <div class="role-desc">Enter the code shared by your peer</div>
+            </button>
+          </div>
+
+          <!-- Initiator Panel -->
+          <div id="initiator-panel" style="display:none;">
+            <div class="session-code-box">
+              <div class="code-label">Your Session Code</div>
+              <div id="session-code-display" aria-label="Session code">——————</div>
+              <div class="session-waiting">
+                <div class="waiting-dot"></div>
+                <div class="waiting-dot"></div>
+                <div class="waiting-dot"></div>
+                <span>Waiting for peer…</span>
+              </div>
+            </div>
+
+            <div class="share-link-row">
+              <div id="share-link" class="text-mono text-xs" aria-label="Shareable link"></div>
+              <button id="btn-copy-link" class="btn btn-secondary btn-sm" type="button">Copy Link</button>
+            </div>
+
+            <button id="btn-copy-code" class="btn btn-primary btn-full" type="button">
+              Copy Code
+            </button>
+          </div>
+
+          <!-- Joiner Panel -->
+          <div id="joiner-panel" style="display:none;">
+            <div class="join-input-group">
+              <div>
+                <div class="input-label">Enter Session Code</div>
+                <input
+                  id="join-code-input"
+                  class="code-input"
+                  type="text"
+                  maxlength="6"
+                  placeholder="XXXXXX"
+                  autocomplete="off"
+                  autocorrect="off"
+                  autocapitalize="characters"
+                  spellcheck="false"
+                  aria-label="Enter the 6-character session code"
+                />
+              </div>
+              <button id="btn-join-session" class="btn btn-purple btn-full" type="button">
+                🔗 Connect to Peer
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════════════════════════════════════════
+           PHASE 3: Key Exchange / Handshake
+           ═══════════════════════════════════════════════════ -->
+      <section id="section-handshake" class="app-section" aria-label="Cryptographic Handshake">
+        <div class="card">
+          <h1 class="card-title">Securing Channel</h1>
+          <p class="card-subtitle">
+            Performing ECDH key exchange and mixing TRNG entropy via HKDF-SHA-256.
+          </p>
+
+          <!-- Peer visual -->
+          <div class="handshake-visual" aria-hidden="true">
+            <div class="peer-node">
+              <div class="peer-icon peer-a">🧑‍💻</div>
+              <div class="peer-label">You</div>
+            </div>
+            <div class="connection-line"></div>
+            <div class="peer-node">
+              <div class="peer-icon peer-b">👤</div>
+              <div class="peer-label">Peer</div>
+            </div>
+          </div>
+
+          <!-- Step indicators -->
+          <div class="handshake-steps" role="log" aria-label="Key exchange steps">
+            <div id="hs-step-1" class="hs-step">○ Generating ECDH key pair…</div>
+            <div id="hs-step-2" class="hs-step">○ Exchanging public keys…</div>
+            <div id="hs-step-3" class="hs-step">○ Deriving shared secret…</div>
+            <div id="hs-step-4" class="hs-step">○ Mixing TRNG entropy via HKDF…</div>
+            <div id="hs-step-5" class="hs-step">○ AES-GCM-256 key ready</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════════════════════════════════════════
+           PHASE 4: Chat
+           ═══════════════════════════════════════════════════ -->
+      <section id="section-chat" class="app-section" aria-label="Encrypted Chat">
+        <div class="chat-container">
+          <!-- Chat header -->
+          <div class="chat-header">
+            <div class="chat-peer-info">
+              <div class="chat-avatar" aria-hidden="true">💬</div>
+              <div>
+                <div class="chat-peer-name">Secure Session</div>
+                <div id="my-peer-label" class="text-muted text-xs text-mono">You (Host)</div>
+              </div>
+            </div>
+            <div class="e2ee-badge" role="status">
+              🔒 AES-GCM-256 E2EE
+            </div>
+          </div>
+
+          <!-- Message log -->
+          <div id="message-log" role="log" aria-live="polite" aria-label="Chat messages">
+            <!-- Empty state -->
+            <div class="chat-empty-state" id="chat-empty-state">
+              <div class="chat-empty-icon">🔐</div>
+              <div class="chat-empty-text">
+                End-to-end encrypted.<br />
+                Your messages are encrypted before leaving this device.
+              </div>
+            </div>
+          </div>
+
+          <!-- Input area -->
+          <div class="chat-input-area">
+            <textarea
+              id="chat-input"
+              placeholder="Type an encrypted message… (Enter to send)"
+              rows="1"
+              aria-label="Message input"
+              maxlength="4096"
+            ></textarea>
+            <button id="send-btn" type="button" aria-label="Send encrypted message">
+              ➤
+            </button>
+          </div>
+        </div>
+      </section>
+
+    </main><!-- /app-main -->
+
+    <!-- ── Error Toast ───────────────────────────────────── -->
+    <div id="error-toast" role="alert" aria-live="assertive"></div>
+
+  </div><!-- /app -->
+
+  <!-- ── JavaScript (ES Modules) ───────────────────────────── -->
+  <script type="module" src="js/app.js"></script>
+
+  <!-- Joiner role card JS (can't use module events easily, so inline) -->
+  <script>
+    // Show joiner panel when "Join Session" role card is clicked
+    document.getElementById('join-role-card')?.addEventListener('click', () => {
+      document.getElementById('role-picker').style.display = 'none';
+      document.getElementById('joiner-panel').style.display = 'block';
+      document.getElementById('initiator-panel').style.display = 'none';
+      document.getElementById('join-code-input').focus();
+    });
+
+    // Auto-resize textarea
+    const chatInput = document.getElementById('chat-input');
+    if (chatInput) {
+      chatInput.addEventListener('input', function() {
+        this.style.height = 'auto';
+        this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+      });
+    }
+
+    // Remove empty state on first message
+    const msgLog = document.getElementById('message-log');
+    const emptyState = document.getElementById('chat-empty-state');
+    if (msgLog && emptyState) {
+      const observer = new MutationObserver(() => {
+        const hasMessages = msgLog.querySelector('.message');
+        if (hasMessages) {
+          emptyState.style.display = 'none';
+          observer.disconnect();
+        }
+      });
+      observer.observe(msgLog, { childList: true });
+    }
+  </script>
+</body>
+</html>

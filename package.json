@@ -1,0 +1,25 @@
+{
+  "name": "e2ee-chat-trng",
+  "version": "1.0.0",
+  "description": "Serverless P2P E2EE Chat with Hardware-Based TRNG — hosted on GitHub Pages",
+  "private": true,
+  "scripts": {
+    "lint": "eslint js/**/*.js",
+    "lint:fix": "eslint js/**/*.js --fix"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "e2ee",
+    "webrtc",
+    "p2p",
+    "chat",
+    "trng",
+    "crypto"
+  ],
+  "license": "MIT"
+}
