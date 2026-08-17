@@ -6,10 +6,15 @@
 > **A serverless, peer-to-peer, end-to-end encrypted chat application where encryption keys are derived from true physical entropy harvested from your device's motion sensors.**
 
 🌐 **Live App**: [https://deeyeti.github.io/e2ee-chat-trng](https://deeyeti.github.io/e2ee-chat-trng)
+<img width="1919" height="893" alt="image" src="https://github.com/user-attachments/assets/d6c94d82-6f91-4152-a631-5c78e8d0139d" />
+
+
+<img width="1919" height="891" alt="image" src="https://github.com/user-attachments/assets/a9ed959e-7163-40d7-bfee-e778dcf4d109" />
+
 
 ---
 
-## ✨ Features
+## Features
 
 | Feature | Detail |
 |---|---|
