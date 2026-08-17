@@ -69,12 +69,22 @@ class App {
    */
   async _runTRNG() {
     const hasSensors = this._trng.hasSensors();
-    this._ui.showTRNGPhase(hasSensors);
+    const requiresPermissionGesture = hasSensors && this._trng.requiresPermissionGesture();
+    this._ui.showTRNGPhase(hasSensors, requiresPermissionGesture);
 
     // Wire progress updates to UI
     this._trng.addEventListener('progress', (e) => {
-      const { percent, /* bitsCollected */ } = e.detail;
-      this._ui.updateEntropyProgress(percent, this._trng.exportRawData().slice(-20));
+      const { percent, bitsCollected, bitsNeeded } = e.detail;
+      this._ui.updateEntropyProgress(
+        percent,
+        this._trng.exportRawData().slice(-20),
+        bitsCollected,
+        bitsNeeded
+      );
+    });
+
+    this._trng.addEventListener('status', (e) => {
+      this._ui.setEntropyStatus(e.detail.message);
     });
 
     this._trng.addEventListener('complete', async (e) => {
@@ -88,12 +98,22 @@ class App {
       await this._runConnectPhase();
     });
 
-    try {
-      await this._trng.harvest();
-    } catch (err) {
-      this._ui.showError(`TRNG Error: ${err.message}`);
-      console.error('[App] TRNG failed:', err);
+    const startHarvest = async () => {
+      try {
+        await this._trng.harvest();
+      } catch (err) {
+        this._ui.showError(`TRNG Error: ${err.message}`);
+        console.error('[App] TRNG failed:', err);
+      }
+    };
+
+    if (requiresPermissionGesture) {
+      this._ui.setEntropyStatus('Waiting for motion permission…');
+      this._ui.setEntropyStartHandler(startHarvest);
+      return;
     }
+
+    await startHarvest();
   }
 
   /**
@@ -276,17 +296,20 @@ class App {
       }
     });
 
-    // Export raw entropy data (SRS §4.2 auditability)
+    // Export source sensor samples (SRS §4.2 auditability)
     document.getElementById('btn-export-entropy')?.addEventListener('click', () => {
-      const raw = this._trng.exportRawData();
-      const blob = new Blob([JSON.stringify({ rawBits: raw, timestamp: Date.now() }, null, 2)],
+      const auditLog = this._trng.exportAuditLog();
+      const blob = new Blob([JSON.stringify(auditLog, null, 2)],
         { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
       a.download = `entropy-audit-${Date.now()}.json`;
+      a.style.display = 'none';
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
     });
 
     // Zero-knowledge cleanup on tab close (SRS §3.2, §4.2)

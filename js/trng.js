@@ -13,33 +13,31 @@
  *
  * Events emitted on the returned EventTarget:
  *   - 'progress'  → { detail: { percent: 0-100, bitsCollected, bitsNeeded } }
+ *   - 'status'    → { detail: { message } }
  *   - 'complete'  → { detail: { entropy: Uint8Array(32), usedSensor: bool } }
  *   - 'error'     → { detail: { message: string } }
  */
 
 const BITS_NEEDED = 256;       // 256-bit AES key
-const LSB_DIGITS = [4, 5, 6, 7]; // decimal digit positions to extract from sensor floats
+const SENSOR_SCALE = 1000;     // retain milligravity / millidegree sensor detail
+const BITS_PER_READING = 12;
+const SENSOR_TIMEOUT_MS = 30000;
+const MAX_AUDIT_SAMPLES = 2048;
 
 /**
- * Extract target decimal digit bits from a floating-point sensor value.
- * We ignore integer part and top decimals, focusing on thermal/quantization noise
- * in the lower decimal places.
+ * Extract low-order binary bits from a fixed-point sensor reading. Fixed-point
+ * extraction works with phones that quantise their readings to a few decimal
+ * places, where the former decimal-digit approach produced only zeroes.
  *
  * @param {number} value - raw sensor reading
  * @returns {number[]} - array of extracted bits (0 or 1)
  */
 function extractLSBs(value) {
+  const fixedPoint = Math.round(Math.abs(value) * SENSOR_SCALE) >>> 0;
   const bits = [];
-  const absStr = Math.abs(value).toFixed(8);
-  const decPart = absStr.split('.')[1] || '';
 
-  for (const pos of LSB_DIGITS) {
-    const digit = parseInt(decPart[pos] ?? '0', 10);
-    // Extract 4 bits from each decimal digit
-    bits.push((digit >> 3) & 1);
-    bits.push((digit >> 2) & 1);
-    bits.push((digit >> 1) & 1);
-    bits.push(digit & 1);
+  for (let bit = 0; bit < BITS_PER_READING; bit++) {
+    bits.push((fixedPoint >>> bit) & 1);
   }
   return bits;
 }
@@ -89,6 +87,9 @@ class TRNG extends EventTarget {
     this._lastReading = null;
     this._running = false;
     this._usedSensor = false;
+    this._auditSamples = [];
+    this._auditSamplesDropped = 0;
+    this._lastHarvestMode = null;
   }
 
   /**
@@ -96,18 +97,27 @@ class TRNG extends EventTarget {
    * @returns {Promise<boolean>} - true if sensor access granted
    */
   async requestPermission() {
-    if (typeof DeviceMotionEvent === 'undefined') {
+    const sensorEventTypes = [
+      globalThis.DeviceMotionEvent,
+      globalThis.DeviceOrientationEvent,
+    ].filter(Boolean);
+
+    if (sensorEventTypes.length === 0) return false;
+
+    const permissionRequests = sensorEventTypes
+      .filter(EventType => typeof EventType.requestPermission === 'function')
+      // Invoke every request synchronously so iOS still treats this as the
+      // button's user gesture before either permission prompt resolves.
+      .map(EventType => EventType.requestPermission());
+
+    if (permissionRequests.length === 0) return true; // Android / non-iOS
+
+    try {
+      const results = await Promise.all(permissionRequests);
+      return results.includes('granted');
+    } catch {
       return false;
     }
-    if (typeof DeviceMotionEvent.requestPermission === 'function') {
-      try {
-        const result = await DeviceMotionEvent.requestPermission();
-        return result === 'granted';
-      } catch {
-        return false;
-      }
-    }
-    return true; // Android / non-iOS — permission implicit
   }
 
   /**
@@ -120,6 +130,18 @@ class TRNG extends EventTarget {
   }
 
   /**
+   * Returns whether this browser requires an explicit user gesture before it
+   * will show the motion-sensor permission prompt (notably iOS Safari).
+   * @returns {boolean}
+   */
+  requiresPermissionGesture() {
+    return [
+      globalThis.DeviceMotionEvent,
+      globalThis.DeviceOrientationEvent,
+    ].some(EventType => typeof EventType?.requestPermission === 'function');
+  }
+
+  /**
    * Start harvesting entropy from sensors, or fall back to CSPRNG.
    * @returns {Promise<Uint8Array>} - 32-byte entropy buffer
    */
@@ -128,10 +150,16 @@ class TRNG extends EventTarget {
     this._running = true;
     this._rawBits = [];
     this._debiasedBits = [];
-
-    this._emitProgress();
+    this._auditSamples = [];
+    this._auditSamplesDropped = 0;
+    this._lastHarvestMode = null;
 
     const hasSensors = this.hasSensors();
+    this._emitProgress();
+    this._emitStatus(hasSensors
+      ? 'Requesting motion-sensor permission…'
+      : 'Preparing Web Crypto fallback…');
+
     const permGranted = hasSensors ? await this.requestPermission() : false;
 
     if (!hasSensors || !permGranted) {
@@ -147,14 +175,28 @@ class TRNG extends EventTarget {
    */
   _sensorHarvest() {
     this._usedSensor = true;
+    this._lastHarvestMode = 'device-sensors';
+    this._emitStatus('Listening for device motion…');
+
     return new Promise((resolve) => {
-      const onMotion = (event) => {
-        const acc = event.accelerationIncludingGravity || event.acceleration;
-        const rot = event.rotationRate;
-        const readings = [
-          acc?.x, acc?.y, acc?.z,
-          rot?.alpha, rot?.beta, rot?.gamma,
-        ].filter(v => v !== null && v !== undefined && !isNaN(v) && v !== 0);
+      let isFinished = false;
+      let timeoutId = null;
+
+      const cleanup = () => {
+        window.removeEventListener('devicemotion', onMotion);
+        window.removeEventListener('deviceorientation', onOrientation);
+        if (timeoutId) clearTimeout(timeoutId);
+      };
+
+      const finish = () => {
+        if (isFinished) return;
+        isFinished = true;
+        cleanup();
+        this._finalise(resolve);
+      };
+
+      const collect = (source, event, readings, sample) => {
+        this._recordAuditSample(source, event.timeStamp, sample);
 
         if (readings.length === 0) return;
 
@@ -166,10 +208,21 @@ class TRNG extends EventTarget {
 
         this._emitProgress();
 
-        if (this._debiasedBits.length >= BITS_NEEDED) {
-          window.removeEventListener('devicemotion', onMotion);
-          this._finalise(resolve);
-        }
+        if (this._debiasedBits.length >= BITS_NEEDED) finish();
+      };
+
+      const onMotion = (event) => {
+        const acc = event.accelerationIncludingGravity || event.acceleration;
+        const rot = event.rotationRate;
+        const readings = [
+          acc?.x, acc?.y, acc?.z,
+          rot?.alpha, rot?.beta, rot?.gamma,
+        ].filter(v => v !== null && v !== undefined && !isNaN(v) && v !== 0);
+
+        collect('devicemotion', event, readings, {
+          acceleration: this._serialiseAxes(acc, ['x', 'y', 'z']),
+          rotationRate: this._serialiseAxes(rot, ['alpha', 'beta', 'gamma']),
+        });
       };
 
       window.addEventListener('devicemotion', onMotion);
@@ -178,25 +231,23 @@ class TRNG extends EventTarget {
       const onOrientation = (event) => {
         const readings = [event.alpha, event.beta, event.gamma]
           .filter(v => v !== null && v !== undefined && !isNaN(v));
-        if (readings.length === 0) return;
 
-        const rawBits = readings.flatMap(extractLSBs);
-        const debiasedBatch = vonNeumannExtract(rawBits);
-        this._rawBits.push(...rawBits);
-        this._debiasedBits.push(...debiasedBatch);
+        collect('deviceorientation', event, readings, {
+          orientation: this._serialiseAxes(event, ['alpha', 'beta', 'gamma']),
+        });
       };
       window.addEventListener('deviceorientation', onOrientation);
 
       // Safety timeout — if no motion after 30s, fall back
-      setTimeout(() => {
+      timeoutId = setTimeout(() => {
         if (this._debiasedBits.length < BITS_NEEDED) {
-          window.removeEventListener('devicemotion', onMotion);
-          window.removeEventListener('deviceorientation', onOrientation);
           console.warn('[TRNG] Sensor timeout, supplementing with CSPRNG');
+          this._emitStatus('Sensor input was insufficient — adding CSPRNG entropy…');
+          this._lastHarvestMode = 'device-sensors-with-csprng-supplement';
           this._supplementWithCSPRNG();
-          this._finalise(resolve);
+          finish();
         }
-      }, 30000);
+      }, SENSOR_TIMEOUT_MS);
     });
   }
 
@@ -223,17 +274,28 @@ class TRNG extends EventTarget {
    */
   async _fallbackHarvest() {
     this._usedSensor = false;
+    this._lastHarvestMode = 'csprng-fallback';
+    this._emitStatus('No usable motion sensor — generating CSPRNG entropy…');
+
+    // Web Crypto completes almost immediately. Yield between real pipeline
+    // stages so the loading screen can render meaningful progress updates.
+    for (const percent of [20, 45, 70]) {
+      this._emitProgress(percent);
+      await wait(120);
+    }
+
     const rawEntropy = new Uint8Array(32);
     crypto.getRandomValues(rawEntropy);
 
     // Still pipe through SHA-256 for consistency
+    this._emitStatus('Conditioning entropy with SHA-256…');
+    this._emitProgress(90);
+    await wait(120);
     const hashBuffer = await crypto.subtle.digest('SHA-256', rawEntropy);
     const entropy = new Uint8Array(hashBuffer);
 
     this._running = false;
-    this.dispatchEvent(new CustomEvent('progress', {
-      detail: { percent: 100, bitsCollected: 256, bitsNeeded: BITS_NEEDED }
-    }));
+    this._emitProgress(100, BITS_NEEDED);
     this.dispatchEvent(new CustomEvent('complete', {
       detail: { entropy, usedSensor: false, rawBits: [] }
     }));
@@ -249,6 +311,7 @@ class TRNG extends EventTarget {
     const rawBytes = bitsToBytes(bitsToUse);
 
     // SHA-256 whitening pass
+    this._emitStatus('Conditioning collected entropy with SHA-256…');
     const hashBuffer = await crypto.subtle.digest('SHA-256', rawBytes);
     const entropy = new Uint8Array(hashBuffer);
 
@@ -270,8 +333,8 @@ class TRNG extends EventTarget {
    * Emit current progress as an event.
    * @private
    */
-  _emitProgress(overridePercent = null) {
-    const bitsCollected = this._debiasedBits.length;
+  _emitProgress(overridePercent = null, overrideBitsCollected = null) {
+    const bitsCollected = overrideBitsCollected ?? this._debiasedBits.length;
     const percent = overridePercent ?? Math.min(100, Math.floor((bitsCollected / BITS_NEEDED) * 100));
     this.dispatchEvent(new CustomEvent('progress', {
       detail: { percent, bitsCollected, bitsNeeded: BITS_NEEDED }
@@ -279,12 +342,81 @@ class TRNG extends EventTarget {
   }
 
   /**
-   * Export raw sensor samples for auditability (SRS §4.2).
-   * @returns {number[][]} copy of raw bits grouped into bytes
+   * Emit a plain-language status update for the loading screen.
+   * @param {string} message
+   * @private
+   */
+  _emitStatus(message) {
+    this.dispatchEvent(new CustomEvent('status', { detail: { message } }));
+  }
+
+  /**
+   * Store a bounded copy of source samples for the user-initiated audit log.
+   * @private
+   */
+  _recordAuditSample(source, timestamp, values) {
+    if (this._auditSamples.length >= MAX_AUDIT_SAMPLES) {
+      this._auditSamplesDropped++;
+      return;
+    }
+
+    this._auditSamples.push({
+      source,
+      timestamp: Math.round(timestamp * 1000) / 1000,
+      values,
+    });
+  }
+
+  /**
+   * Copy supported numeric axes into a JSON-safe object.
+   * @private
+   */
+  _serialiseAxes(source, axes) {
+    if (!source) return null;
+
+    const result = {};
+    for (const axis of axes) {
+      const value = source[axis];
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        result[axis] = value;
+      }
+    }
+    return Object.keys(result).length > 0 ? result : null;
+  }
+
+  /**
+   * Export raw sensor samples for auditability without exposing the final
+   * entropy buffer or session keys.
+   * @returns {object}
+   */
+  exportAuditLog() {
+    return {
+      format: 'securelink-entropy-audit-v1',
+      generatedAt: new Date().toISOString(),
+      source: this._lastHarvestMode,
+      sensorSamplesCollected: this._auditSamples.length,
+      sensorSamplesOmitted: this._auditSamplesDropped,
+      debiasedBitsCollected: this._debiasedBits.length,
+      samples: this._auditSamples.map(sample => ({
+        ...sample,
+        values: JSON.parse(JSON.stringify(sample.values)),
+      })),
+      note: 'Raw sensor samples only. Final entropy, derived keys, and messages are never exported.',
+    };
+  }
+
+  /**
+   * Return recent extracted bits for the oscilloscope only.
+   * @returns {number[]}
    */
   exportRawData() {
     return [...this._rawBits];
   }
+}
+
+/** @param {number} ms @returns {Promise<void>} */
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 export { TRNG };

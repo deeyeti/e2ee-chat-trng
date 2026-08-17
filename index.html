@@ -53,6 +53,9 @@
       <div id="sensor-status-msg" class="sensor-notice">
         Checking motion sensor availability…
       </div>
+      <button id="btn-start-entropy" class="btn btn-primary sensor-permission-btn" type="button" hidden>
+        Enable motion collection
+      </button>
 
       <!-- Oscilloscope -->
       <div class="oscilloscope-container" aria-label="Entropy visualization">
@@ -76,9 +79,6 @@
         <span id="trng-status">Sampling…</span>
       </div>
 
-      <button id="btn-export-entropy" class="audit-link" type="button">
-        Export raw entropy for audit →
-      </button>
     </section>
 
     <!-- ═══════════════════════════════════════════════
@@ -166,6 +166,10 @@
           Connect to peer
         </button>
       </div>
+
+      <button id="btn-export-entropy" class="audit-link" type="button">
+        Download entropy audit log →
+      </button>
     </section>
 
     <!-- ═══════════════════════════════════════════════
@@ -247,7 +251,7 @@
         <div class="chat-input-row">
           <textarea
             id="chat-input"
-            placeholder="Encrypted message…"
+            placeholder="Message…"
             rows="1"
             aria-label="Message input"
             maxlength="4096"

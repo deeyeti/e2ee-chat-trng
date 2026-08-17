@@ -192,6 +192,19 @@ python -m http.server 8080
 
 ## 📋 Changelog
 
+### Unreleased
+
+**Entropy collection & auditability**
+- Fixed live entropy progress on orientation-only devices and added clear collection-stage status updates.
+- Added the iOS motion-permission action required before sensor collection can start.
+- Reworked fixed-point LSB extraction for quantised mobile sensor readings and record named raw sensor samples in audit exports.
+- Moved the entropy audit download to the connection screen; exports never include final entropy, session keys, or messages.
+
+**Chat**
+- Simplified the connected-chat input placeholder to `Message…`.
+
+---
+
 ### v1.1.0 — UI Overhaul
 > Monochrome redesign · Editorial aesthetic · Glassmorphism
 

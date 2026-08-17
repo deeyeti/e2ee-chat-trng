@@ -319,6 +319,10 @@ body::before {
 #trng-status { transition: color 0.3s; }
 .trng-complete { color: var(--success) !important; }
 
+.sensor-permission-btn {
+  margin: 2px 0 20px;
+}
+
 .audit-link {
   display: inline-block;
   margin-top: 28px;

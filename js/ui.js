@@ -19,19 +19,29 @@ class UIController {
 
   // ── Phase Transitions ───────────────────────────────────
 
-  showTRNGPhase(isSensorAvailable) {
+  showTRNGPhase(isSensorAvailable, requiresPermissionGesture = false) {
     this._phase = 'TRNG';
     this._setActive('section-trng');
 
     const notice = document.getElementById('sensor-status-msg');
+    const startButton = document.getElementById('btn-start-entropy');
     if (notice) {
-      if (isSensorAvailable) {
+      if (isSensorAvailable && requiresPermissionGesture) {
+        notice.textContent = 'Motion access needs your approval before collection can begin.';
+        notice.className = 'sensor-notice ok';
+      } else if (isSensorAvailable) {
         notice.textContent = 'Motion sensors detected — move or shake your device to harvest entropy.';
         notice.className = 'sensor-notice ok';
       } else {
         notice.textContent = 'No motion sensors available — using CSPRNG fallback with SHA-256 whitening.';
         notice.className = 'sensor-notice fallback';
       }
+    }
+
+    if (startButton) {
+      startButton.hidden = !(isSensorAvailable && requiresPermissionGesture);
+      startButton.disabled = false;
+      startButton.textContent = 'Enable motion collection';
     }
 
     this._startOscilloscope();
@@ -82,7 +92,7 @@ class UIController {
 
   // ── TRNG Visualization ──────────────────────────────────
 
-  updateEntropyProgress(percent, rawBits = []) {
+  updateEntropyProgress(percent, rawBits = [], bitsCollected = null, bitsNeeded = 256) {
     const bar     = document.getElementById('entropy-bar');
     const pct     = document.getElementById('entropy-percent');
     const bits    = document.getElementById('bits-collected');
@@ -90,7 +100,10 @@ class UIController {
 
     if (bar)     bar.style.width = `${percent}%`;
     if (pct)     pct.textContent = `${percent}%`;
-    if (bits)    bits.textContent = `${Math.floor(percent * 2.56)} / 256 bits`;
+    if (bits) {
+      const collected = bitsCollected ?? Math.floor((percent / 100) * bitsNeeded);
+      bits.textContent = `${Math.min(collected, bitsNeeded)} / ${bitsNeeded} bits`;
+    }
     if (progBar) progBar.setAttribute('aria-valuenow', percent);
 
     // Feed oscilloscope
@@ -104,10 +117,37 @@ class UIController {
   showEntropyComplete(usedSensor) {
     this.updateEntropyProgress(100);
     const status = document.getElementById('trng-status');
+    const startButton = document.getElementById('btn-start-entropy');
     if (status) {
       status.textContent = usedSensor ? 'Hardware entropy captured' : 'CSPRNG entropy ready';
       status.className = 'trng-complete';
     }
+    if (startButton) startButton.hidden = true;
+  }
+
+  /** Display the current entropy-processing step. */
+  setEntropyStatus(message) {
+    const status = document.getElementById('trng-status');
+    if (!status) return;
+
+    status.textContent = message;
+    status.className = '';
+  }
+
+  /**
+   * Run the supplied callback from the permission button's click event.
+   * This preserves the user gesture required by iOS motion permissions.
+   * @param {() => void} onStart
+   */
+  setEntropyStartHandler(onStart) {
+    const startButton = document.getElementById('btn-start-entropy');
+    if (!startButton || startButton.hidden) return;
+
+    startButton.addEventListener('click', () => {
+      startButton.disabled = true;
+      startButton.textContent = 'Requesting access…';
+      onStart();
+    }, { once: true });
   }
 
   // ── Status ──────────────────────────────────────────────
