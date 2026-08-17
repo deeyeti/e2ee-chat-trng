@@ -19,7 +19,6 @@
 
 const BITS_NEEDED = 256;       // 256-bit AES key
 const LSB_DIGITS = [4, 5, 6, 7]; // decimal digit positions to extract from sensor floats
-const SAMPLE_INTERVAL_MS = 17; // ~60 Hz
 
 /**
  * Extract target decimal digit bits from a floating-point sensor value.
@@ -155,7 +154,7 @@ class TRNG extends EventTarget {
         const readings = [
           acc?.x, acc?.y, acc?.z,
           rot?.alpha, rot?.beta, rot?.gamma,
-        ].filter(v => v != null && !isNaN(v) && v !== 0);
+        ].filter(v => v !== null && v !== undefined && !isNaN(v) && v !== 0);
 
         if (readings.length === 0) return;
 
@@ -178,7 +177,7 @@ class TRNG extends EventTarget {
       // Also try deviceorientation as supplementary source
       const onOrientation = (event) => {
         const readings = [event.alpha, event.beta, event.gamma]
-          .filter(v => v != null && !isNaN(v));
+          .filter(v => v !== null && v !== undefined && !isNaN(v));
         if (readings.length === 0) return;
 
         const rawBits = readings.flatMap(extractLSBs);

@@ -17,7 +17,6 @@
  */
 
 const PEERJS_CDN = 'https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
-const KEY_CHANNEL_LABEL = 'e2ee-key-exchange';
 const CHAT_CHANNEL_LABEL = 'e2ee-chat';
 
 /**
