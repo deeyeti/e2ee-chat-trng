@@ -672,6 +672,49 @@ body::before {
   background: rgba(90,158,111,0.05);
 }
 
+/* ── Fingerprint verify bar ──────────────────────────────── */
+.fingerprint-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 24px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(158, 138, 58, 0.04);
+  flex-shrink: 0;
+  animation: fadeUp 0.4s var(--ease);
+}
+
+.fingerprint-label {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--warning);
+  flex-shrink: 0;
+}
+
+.fingerprint-code {
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  color: var(--text-1);
+  flex-shrink: 0;
+}
+
+.fingerprint-hint {
+  font-size: 0.65rem;
+  color: var(--text-3);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+@media (max-width: 600px) {
+  .fingerprint-row { flex-wrap: wrap; gap: 6px; padding: 8px 16px; }
+  .fingerprint-hint { display: none; }
+  .fingerprint-code { font-size: 0.8rem; letter-spacing: 0.12em; }
+}
+
 /* Message log */
 #message-log {
   flex: 1;

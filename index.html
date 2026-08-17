@@ -236,6 +236,13 @@
           <div class="e2ee-tag" role="status">AES-GCM-256</div>
         </div>
 
+        <!-- Key fingerprint verify bar — hidden until key exchange completes -->
+        <div id="fingerprint-row" class="fingerprint-row" hidden aria-label="Session fingerprint">
+          <span class="fingerprint-label">Verify with peer</span>
+          <code id="fingerprint-value" class="fingerprint-code">—</code>
+          <span class="fingerprint-hint">Read this aloud and confirm it matches</span>
+        </div>
+
         <!-- Message log -->
         <div id="message-log" role="log" aria-live="polite" aria-label="Chat messages">
           <div class="chat-empty" id="chat-empty-state">

@@ -27,6 +27,8 @@ class CryptoEngine {
     this._aesKey = null;
     /** @type {string|null} */
     this._publicKeyBase64 = null;
+    /** @type {string|null} */
+    this._peerPublicKeyBase64 = null;
     /** @type {boolean} */
     this._ready = false;
   }
@@ -61,6 +63,7 @@ class CryptoEngine {
     if (!this._ecdhKeyPair || !this._publicKeyBase64) {
       throw new Error('Key pair not generated yet');
     }
+    this._peerPublicKeyBase64 = peerPublicKeyBase64;
 
     // 1. Import peer's public key
     const peerPubKeyBuffer = base64ToArrayBuffer(peerPublicKeyBase64);
@@ -162,6 +165,34 @@ class CryptoEngine {
   }
 
   /**
+   * Derive a short, human-readable fingerprint of the session key exchange.
+   * Both peers compute the same value because the public keys are sorted
+   * before hashing, making it order-independent.
+   *
+   * Format: four groups of 4 hex chars joined by ' · '
+   * Example: '3A4F · B21C · 9E77 · 02A1'
+   *
+   * Compare this string with your peer out-of-band (voice, separate chat)
+   * to detect any MITM key substitution.
+   *
+   * @returns {Promise<string>}
+   */
+  async getFingerprint() {
+    if (!this._publicKeyBase64 || !this._peerPublicKeyBase64) {
+      throw new Error('Both public keys must be known before computing fingerprint');
+    }
+    const sorted = [this._publicKeyBase64, this._peerPublicKeyBase64].sort();
+    const input  = `securelink-fp-v1|${sorted[0]}|${sorted[1]}`;
+    const data   = new TextEncoder().encode(input);
+    const hashBuf = await crypto.subtle.digest('SHA-256', data);
+    const bytes  = new Uint8Array(hashBuf).slice(0, 16);
+    const hex    = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    return [hex.slice(0, 4), hex.slice(4, 8), hex.slice(8, 12), hex.slice(12, 16)]
+      .map(g => g.toUpperCase())
+      .join(' · ');
+  }
+
+  /**
    * Check if the AES session key is ready for use.
    * @returns {boolean}
    */
@@ -176,6 +207,7 @@ class CryptoEngine {
     this._ecdhKeyPair = null;
     this._aesKey = null;
     this._publicKeyBase64 = null;
+    this._peerPublicKeyBase64 = null;
     this._ready = false;
   }
 }

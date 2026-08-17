@@ -79,7 +79,7 @@ class UIController {
     this._animateHandshakeSteps();
   }
 
-  showChatPhase(isInitiator) {
+  showChatPhase(isInitiator, fingerprint) {
     this._phase = 'CHAT';
     this._setActive('section-chat');
     this._updateStatus('connected');
@@ -87,7 +87,17 @@ class UIController {
     const sub = document.getElementById('my-peer-label');
     if (sub) sub.textContent = isInitiator ? 'You are the host' : 'You are the guest';
 
+    if (fingerprint) this._showFingerprint(fingerprint);
+
     document.getElementById('chat-input')?.focus();
+  }
+
+  /** Populate and reveal the fingerprint verify row. */
+  _showFingerprint(fingerprint) {
+    const row = document.getElementById('fingerprint-row');
+    const val = document.getElementById('fingerprint-value');
+    if (val) val.textContent = fingerprint;
+    if (row) row.hidden = false;
   }
 
   // ── TRNG Visualization ──────────────────────────────────

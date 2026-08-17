@@ -191,9 +191,9 @@ class App {
   /**
    * Phase 4: Start chat session.
    */
-  _startChat() {
+  _startChat(fingerprint) {
     this._transition(AppState.CHATTING);
-    this._ui.showChatPhase(this._isInitiator);
+    this._ui.showChatPhase(this._isInitiator, fingerprint);
     this._ui.setStatusConnected();
   }
 
@@ -208,11 +208,12 @@ class App {
       const { publicKey } = e.detail;
       try {
         await this._crypto.deriveSharedKey(publicKey);
+        const fingerprint = await this._crypto.getFingerprint();
 
         // Allow handshake animation to complete
         await sleep(3600);
 
-        this._startChat();
+        this._startChat(fingerprint);
       } catch (err) {
         this._ui.showError(`Key derivation failed: ${err.message}`);
       }
