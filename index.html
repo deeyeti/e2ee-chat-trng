@@ -93,7 +93,7 @@
       </p>
 
       <!-- Tab switcher -->
-      <div class="role-tabs" role="tablist">
+      <div class="role-tabs" role="tablist" style="margin-bottom: 12px;">
         <button
           id="tab-create"
           class="role-tab active"
@@ -112,8 +112,17 @@
         >Join session</button>
       </div>
 
+      <!-- Mode toggle -->
+      <div class="conn-mode-toggle" id="conn-mode-toggle">
+        <button id="btn-mode-auto" class="mode-btn active" data-mode="auto" type="button">Auto (PeerJS)</button>
+        <button id="btn-mode-manual" class="mode-btn" data-mode="manual" type="button">Manual (No Server)</button>
+      </div>
+
       <!-- Create / Initiator Panel -->
       <div id="panel-create" role="tabpanel" aria-labelledby="tab-create">
+        
+        <!-- AUTO (PeerJS) Create -->
+        <div id="create-auto">
         <div id="initiator-panel" style="display:none;">
           <div class="session-code-display">
             <p class="code-hint">Session code</p>
@@ -143,10 +152,31 @@
             Generate session code
           </button>
         </div>
+        </div>
+
+        <!-- MANUAL Create -->
+        <div id="create-manual" style="display:none;">
+          <p class="code-hint">1. Copy your offer and send to peer</p>
+          <textarea id="manual-offer-display" readonly class="manual-textarea" placeholder="Click 'Generate Offer' below..."></textarea>
+          <div style="display: flex; gap: 8px;">
+            <button id="btn-generate-manual-offer" class="btn btn-primary" type="button">Generate Offer</button>
+            <button id="btn-copy-manual-offer" class="btn btn-ghost" type="button" style="display:none;">Copy Offer</button>
+          </div>
+
+          <div id="manual-create-step2" style="display:none; margin-top: 24px;">
+            <p class="code-hint">2. Paste peer's answer</p>
+            <textarea id="manual-answer-input" class="manual-textarea" placeholder="Paste answer here..."></textarea>
+            <button id="btn-connect-manual-initiator" class="btn btn-primary" type="button">Connect</button>
+          </div>
+        </div>
+
       </div>
 
       <!-- Join / Joiner Panel -->
       <div id="panel-join" role="tabpanel" aria-labelledby="tab-join" style="display:none;">
+        
+        <!-- AUTO (PeerJS) Join -->
+        <div id="join-auto">
         <div class="code-input-wrapper">
           <p class="code-hint" style="margin-bottom:8px;">Enter session code</p>
           <input
@@ -162,9 +192,28 @@
             aria-label="6-character session code"
           />
         </div>
-        <button id="btn-join-session" class="btn btn-primary" type="button">
-          Connect to peer
-        </button>
+          <button id="btn-join-session" class="btn btn-primary" type="button">
+            Connect to peer
+          </button>
+        </div>
+
+        <!-- MANUAL Join -->
+        <div id="join-manual" style="display:none;">
+          <p class="code-hint">1. Paste peer's offer</p>
+          <textarea id="manual-offer-input" class="manual-textarea" placeholder="Paste offer here..."></textarea>
+          <button id="btn-generate-manual-answer" class="btn btn-primary" type="button">Generate Answer</button>
+
+          <div id="manual-join-step2" style="display:none; margin-top: 24px;">
+            <p class="code-hint">2. Copy answer and send back</p>
+            <textarea id="manual-answer-display" readonly class="manual-textarea"></textarea>
+            <div style="display: flex; gap: 8px;">
+              <button id="btn-copy-manual-answer" class="btn btn-ghost" type="button">Copy Answer</button>
+            </div>
+            <div style="margin-top: 16px;">
+              <span class="code-hint">Waiting for initiator to connect...</span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <button id="btn-export-entropy" class="audit-link" type="button">

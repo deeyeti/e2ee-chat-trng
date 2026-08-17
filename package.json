@@ -1,6 +1,6 @@
 {
   "name": "e2ee-chat-trng",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Serverless P2P E2EE Chat with Hardware-Based TRNG — hosted on GitHub Pages",
   "private": true,
   "scripts": {

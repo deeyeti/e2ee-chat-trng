@@ -160,6 +160,113 @@ class UIController {
     }, { once: true });
   }
 
+  // ── Connection UI ───────────────────────────────────────
+
+  bindConnModeToggle(onModeChange) {
+    const btnAuto = document.getElementById('btn-mode-auto');
+    const btnManual = document.getElementById('btn-mode-manual');
+    if (!btnAuto || !btnManual) return;
+
+    btnAuto.addEventListener('click', () => {
+      btnAuto.classList.add('active');
+      btnManual.classList.remove('active');
+      this._updateConnModeUI('auto');
+      if (onModeChange) onModeChange('auto');
+    });
+
+    btnManual.addEventListener('click', () => {
+      btnManual.classList.add('active');
+      btnAuto.classList.remove('active');
+      this._updateConnModeUI('manual');
+      if (onModeChange) onModeChange('manual');
+    });
+  }
+
+  getConnMode() {
+    const btnManual = document.getElementById('btn-mode-manual');
+    return btnManual?.classList.contains('active') ? 'manual' : 'auto';
+  }
+
+  _updateConnModeUI(mode) {
+    const isAuto = mode === 'auto';
+    
+    // Create tab
+    document.getElementById('create-auto').style.display = isAuto ? 'block' : 'none';
+    document.getElementById('create-manual').style.display = isAuto ? 'none' : 'block';
+
+    // Join tab
+    document.getElementById('join-auto').style.display = isAuto ? 'block' : 'none';
+    document.getElementById('join-manual').style.display = isAuto ? 'none' : 'block';
+  }
+
+  bindManualConnection(callbacks) {
+    // Initiator
+    const btnGenOffer = document.getElementById('btn-generate-manual-offer');
+    const btnCopyOffer = document.getElementById('btn-copy-manual-offer');
+    const btnConnectInit = document.getElementById('btn-connect-manual-initiator');
+    const displayOffer = document.getElementById('manual-offer-display');
+    const inputAnswer = document.getElementById('manual-answer-input');
+
+    if (btnGenOffer) {
+      btnGenOffer.addEventListener('click', async () => {
+        btnGenOffer.disabled = true;
+        btnGenOffer.textContent = 'Generating...';
+        const offer = await callbacks.onGenerateOffer();
+        displayOffer.value = offer;
+        btnGenOffer.style.display = 'none';
+        btnCopyOffer.style.display = 'block';
+        document.getElementById('manual-create-step2').style.display = 'block';
+      });
+    }
+
+    if (btnCopyOffer) {
+      btnCopyOffer.addEventListener('click', async () => {
+        await navigator.clipboard.writeText(displayOffer.value);
+        btnCopyOffer.textContent = 'Copied!';
+        setTimeout(() => btnCopyOffer.textContent = 'Copy Offer', 2000);
+      });
+    }
+
+    if (btnConnectInit) {
+      btnConnectInit.addEventListener('click', () => {
+        if (!inputAnswer.value.trim()) return;
+        callbacks.onAcceptAnswer(inputAnswer.value.trim());
+      });
+    }
+
+    // Joiner
+    const btnGenAnswer = document.getElementById('btn-generate-manual-answer');
+    const btnCopyAnswer = document.getElementById('btn-copy-manual-answer');
+    const inputOffer = document.getElementById('manual-offer-input');
+    const displayAnswer = document.getElementById('manual-answer-display');
+
+    if (btnGenAnswer) {
+      btnGenAnswer.addEventListener('click', async () => {
+        if (!inputOffer.value.trim()) return;
+        btnGenAnswer.disabled = true;
+        btnGenAnswer.textContent = 'Generating...';
+        try {
+          const answer = await callbacks.onGenerateAnswer(inputOffer.value.trim());
+          displayAnswer.value = answer;
+          btnGenAnswer.style.display = 'none';
+          document.getElementById('manual-join-step2').style.display = 'block';
+        } catch (e) {
+          this.showError('Invalid offer: ' + e.message);
+          btnGenAnswer.disabled = false;
+          btnGenAnswer.textContent = 'Generate Answer';
+        }
+      });
+    }
+
+    if (btnCopyAnswer) {
+      btnCopyAnswer.addEventListener('click', async () => {
+        await navigator.clipboard.writeText(displayAnswer.value);
+        btnCopyAnswer.textContent = 'Copied!';
+        setTimeout(() => btnCopyAnswer.textContent = 'Copy Answer', 2000);
+      });
+    }
+  }
+
   // ── Status ──────────────────────────────────────────────
 
   _updateStatus(state, message) {

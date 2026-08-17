@@ -10,7 +10,7 @@
 
 import { TRNG } from './trng.js';
 import { CryptoEngine } from './crypto.js';
-import { WebRTCManager } from './webrtc.js';
+import { WebRTCManager, ManualWebRTCManager } from './webrtc.js';
 import { UIController } from './ui.js';
 
 /**
@@ -31,7 +31,7 @@ class App {
     this._state = AppState.INIT;
     this._trng = new TRNG();
     this._crypto = new CryptoEngine();
-    this._webrtc = new WebRTCManager();
+    this._webrtc = new WebRTCManager(); // Defaults to Auto
     this._ui = new UIController();
 
     /** @type {string|null} */
@@ -243,6 +243,40 @@ class App {
   // ── Global Event Bindings ───────────────────────────────────────────────────
 
   _bindGlobalEvents() {
+    this._ui.bindConnModeToggle((mode) => {
+      // Re-initialize WebRTC manager based on mode
+      if (this._webrtc) {
+        this._webrtc.destroy();
+      }
+      if (mode === 'manual') {
+        this._webrtc = new ManualWebRTCManager();
+      } else {
+        this._webrtc = new WebRTCManager();
+      }
+    });
+
+    this._ui.bindManualConnection({
+      onGenerateOffer: async () => {
+        this._isInitiator = true;
+        this._ui.setStatusSignaling();
+        this._bindWebRTCEvents();
+        return await this._webrtc.generateOffer();
+      },
+      onAcceptAnswer: async (answer) => {
+        try {
+          await this._webrtc.acceptAnswer(answer);
+        } catch (e) {
+          this._ui.showError('Failed to accept answer: ' + e.message);
+        }
+      },
+      onGenerateAnswer: async (offer) => {
+        this._isInitiator = false;
+        this._ui.setStatusSignaling();
+        this._bindWebRTCEvents();
+        return await this._webrtc.generateAnswer(offer);
+      }
+    });
+
     // Role selection buttons
     document.getElementById('btn-create-session')?.addEventListener('click', () => {
       this._connectAsInitiator();

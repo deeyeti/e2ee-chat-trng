@@ -194,6 +194,12 @@ python -m http.server 8080
 
 ## 📋 Changelog
 
+### v1.4.0 — Metadata-Free Manual WebRTC & MITM Detection
+
+**Security Enhancements**
+- **Session Fingerprint (MITM Detection):** Cryptographic hash of both public keys (Signal-style). Both users see the exact same 16-hex-character string. If read aloud over a separate channel and they match, a MITM attack is mathematically impossible.
+- **Manual Signaling Mode (No Server):** Users can now bypass PeerJS entirely by manually copying and pasting raw WebRTC SDP offer/answer text. This guarantees 100% metadata privacy, as no signaling server is ever contacted.
+
 ### v1.3.0 — TRNG Engine Overhaul & UI Bug Fixes
 
 **Bug fixes**

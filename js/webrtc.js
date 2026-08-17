@@ -227,4 +227,175 @@ function generateSessionCode() {
   return Array.from(arr).map(b => chars[b % chars.length]).join('');
 }
 
-export { WebRTCManager, generateSessionCode };
+// ── Manual WebRTC (No Signaling Server) ──────────────────────────────────────
+
+const ICE_SERVERS = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+  ]
+};
+
+class ManualWebRTCManager extends EventTarget {
+  constructor() {
+    super();
+    /** @type {RTCPeerConnection|null} */
+    this._pc = null;
+    /** @type {RTCDataChannel|null} */
+    this._dc = null;
+    this._connected = false;
+  }
+
+  /**
+   * Generates an SDP offer (including ICE candidates).
+   * Resolves when ICE gathering is complete.
+   * @returns {Promise<string>} Base64 encoded offer
+   */
+  async generateOffer() {
+    this._pc = new RTCPeerConnection(ICE_SERVERS);
+    this._setupConnection();
+    
+    // Create data channel before creating offer
+    this._dc = this._pc.createDataChannel(CHAT_CHANNEL_LABEL);
+    this._setupDataChannel(this._dc);
+
+    const offer = await this._pc.createOffer();
+    await this._pc.setLocalDescription(offer);
+
+    return new Promise((resolve) => {
+      this._pc.onicegatheringstatechange = () => {
+        if (this._pc.iceGatheringState === 'complete') {
+          const offerStr = JSON.stringify(this._pc.localDescription);
+          resolve(btoa(offerStr));
+        }
+      };
+      // Fallback if ICE gathering takes too long
+      setTimeout(() => {
+        if (this._pc.iceGatheringState !== 'complete') {
+          const offerStr = JSON.stringify(this._pc.localDescription);
+          resolve(btoa(offerStr));
+        }
+      }, 3000);
+    });
+  }
+
+  /**
+   * Accepts the peer's offer and generates an SDP answer (including ICE).
+   * @param {string} offerB64 - Base64 encoded offer
+   * @returns {Promise<string>} Base64 encoded answer
+   */
+  async generateAnswer(offerB64) {
+    this._pc = new RTCPeerConnection(ICE_SERVERS);
+    this._setupConnection();
+
+    this._pc.ondatachannel = (event) => {
+      this._dc = event.channel;
+      this._setupDataChannel(this._dc);
+    };
+
+    const offer = JSON.parse(atob(offerB64));
+    await this._pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+    const answer = await this._pc.createAnswer();
+    await this._pc.setLocalDescription(answer);
+
+    return new Promise((resolve) => {
+      this._pc.onicegatheringstatechange = () => {
+        if (this._pc.iceGatheringState === 'complete') {
+          const answerStr = JSON.stringify(this._pc.localDescription);
+          resolve(btoa(answerStr));
+        }
+      };
+      // Fallback if ICE gathering takes too long
+      setTimeout(() => {
+        if (this._pc.iceGatheringState !== 'complete') {
+          const answerStr = JSON.stringify(this._pc.localDescription);
+          resolve(btoa(answerStr));
+        }
+      }, 3000);
+    });
+  }
+
+  /**
+   * Sets the peer's answer on the initiator's side.
+   * @param {string} answerB64 - Base64 encoded answer
+   */
+  async acceptAnswer(answerB64) {
+    if (!this._pc) throw new Error('PeerConnection not initialized');
+    const answer = JSON.parse(atob(answerB64));
+    await this._pc.setRemoteDescription(new RTCSessionDescription(answer));
+  }
+
+  sendChatMessage(ciphertext) {
+    if (!this._dc || !this._connected) throw new Error('Not connected to peer');
+    this._dc.send(JSON.stringify({ type: 'chat', ciphertext }));
+  }
+
+  sendPublicKey(publicKeyBase64) {
+    if (!this._dc || !this._connected) throw new Error('Not connected to peer');
+    this._dc.send(JSON.stringify({ type: 'key-exchange', publicKey: publicKeyBase64 }));
+  }
+
+  destroy() {
+    this._connected = false;
+    if (this._dc) {
+      try { this._dc.close(); } catch {}
+      this._dc = null;
+    }
+    if (this._pc) {
+      try { this._pc.close(); } catch {}
+      this._pc = null;
+    }
+  }
+
+  _setupConnection() {
+    this._pc.onconnectionstatechange = () => {
+      if (this._pc.connectionState === 'disconnected' || this._pc.connectionState === 'failed') {
+        this._connected = false;
+        this.dispatchEvent(new CustomEvent('disconnected'));
+      }
+    };
+  }
+
+  _setupDataChannel(dc) {
+    dc.onopen = () => {
+      this._connected = true;
+      this.dispatchEvent(new CustomEvent('connected'));
+    };
+
+    dc.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'chat') {
+          this.dispatchEvent(new CustomEvent('chat-message', {
+            detail: { ciphertext: data.ciphertext }
+          }));
+        } else if (data.type === 'key-exchange') {
+          this.dispatchEvent(new CustomEvent('key-exchange', {
+            detail: { publicKey: data.publicKey }
+          }));
+        }
+      } catch (e) {
+        console.error('[WebRTC] Failed to parse manual message:', e);
+      }
+    };
+
+    dc.onclose = () => {
+      this._connected = false;
+      this.dispatchEvent(new CustomEvent('disconnected'));
+    };
+
+    dc.onerror = (err) => {
+      console.error('[WebRTC] DataChannel error:', err);
+      this.dispatchEvent(new CustomEvent('error', {
+        detail: { message: err.message || 'DataChannel error' }
+      }));
+    };
+  }
+
+  isConnected() {
+    return this._connected;
+  }
+}
+
+export { WebRTCManager, ManualWebRTCManager, generateSessionCode };
