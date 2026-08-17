@@ -191,6 +191,26 @@ class TRNG extends EventTarget {
   _sensorHarvest() {
     this._usedSensor = true;
     return new Promise((resolve) => {
+
+      // ── Zero-sensor detection ──────────────────────────────────────────
+      // Laptops expose DeviceMotionEvent but hardware returns all zeros.
+      // After MAX_ZERO_EVENTS consecutive all-zero frames (~150 ms at 60 Hz)
+      // we treat the device as sensor-less and switch to CSPRNG immediately.
+      const MAX_ZERO_EVENTS = 10;
+      let zeroEventCount = 0;
+      let probeResolved = false;
+
+      // Show a slow-sweep probe animation (0 → 12 %) while we wait for the
+      // first real reading, so the bar is never frozen on 0 %.
+      let probeStep = 0;
+      const probeInterval = setInterval(() => {
+        if (probeResolved) { clearInterval(probeInterval); return; }
+        probeStep = Math.min(probeStep + 1, 12);
+        this._emit('progress', { percent: probeStep, bitsCollected: 0, bitsNeeded: BITS_NEEDED });
+        if (probeStep === 1) this._emit('status', { message: 'Probing motion sensors…' });
+      }, 16); // ~60 fps sweep
+
+      // ── Device-motion handler ──────────────────────────────────────────
       const onMotion = (event) => {
         const acc = event.accelerationIncludingGravity || event.acceleration;
         const rot = event.rotationRate;
@@ -198,15 +218,35 @@ class TRNG extends EventTarget {
         const ax = acc?.x ?? 0, ay = acc?.y ?? 0, az = acc?.z ?? 0;
         const ra = rot?.alpha ?? 0, rb = rot?.beta ?? 0, rg = rot?.gamma ?? 0;
 
-        // Save timestamped sample for audit log
-        this._auditSamples.push({
-          t:  Date.now(),
-          ax, ay, az, ra, rb, rg,
-        });
-
-        // Extract bits from every non-zero axis
         const readings = [ax, ay, az, ra, rb, rg].filter(v => v !== 0 && !isNaN(v));
-        if (readings.length === 0) return;
+
+        if (readings.length === 0) {
+          zeroEventCount++;
+          if (zeroEventCount >= MAX_ZERO_EVENTS && !probeResolved) {
+            // No physical sensor — fall back immediately
+            probeResolved = true;
+            clearInterval(probeInterval);
+            window.removeEventListener('devicemotion', onMotion);
+            window.removeEventListener('deviceorientation', onOrientation);
+            clearTimeout(safetyTimer);
+
+            this._usedSensor = false;
+            this._emit('status', { message: 'No sensor data detected — using CSPRNG' });
+            this._fallbackHarvest().then(resolve);
+          }
+          return;
+        }
+
+        // Real sensor data arrived — stop probe animation, start collecting
+        if (!probeResolved) {
+          probeResolved = true;
+          clearInterval(probeInterval);
+          this._emit('status', { message: 'Entropy flowing…' });
+        }
+        zeroEventCount = 0;
+
+        // Save timestamped sample for audit log
+        this._auditSamples.push({ t: Date.now(), ax, ay, az, ra, rb, rg });
 
         const rawBatch      = readings.flatMap(extractEntropyByte);
         const debiasedBatch = vonNeumannExtract(rawBatch);
@@ -216,27 +256,28 @@ class TRNG extends EventTarget {
 
         const collected = this._debiasedBits.length;
         const percent   = Math.min(100, Math.floor((collected / BITS_NEEDED) * 100));
-
         this._emit('progress', { percent, bitsCollected: collected, bitsNeeded: BITS_NEEDED });
 
-        // Update status label at meaningful milestones
-        if (collected === 1)   this._emit('status', { message: 'Entropy flowing…' });
-        if (collected >= 64)   this._emit('status', { message: 'Quarter way…' });
-        if (collected >= 128)  this._emit('status', { message: 'Half way…' });
-        if (collected >= 192)  this._emit('status', { message: 'Almost done…' });
+        if (collected >= 64)  this._emit('status', { message: 'Quarter way…' });
+        if (collected >= 128) this._emit('status', { message: 'Half way…' });
+        if (collected >= 192) this._emit('status', { message: 'Almost done…' });
 
         if (collected >= BITS_NEEDED) {
+          probeResolved = true;
+          clearInterval(probeInterval);
+          clearTimeout(safetyTimer);
           window.removeEventListener('devicemotion', onMotion);
           window.removeEventListener('deviceorientation', onOrientation);
           this._finalise(resolve);
         }
       };
 
+      // Supplementary orientation source
       const onOrientation = (event) => {
+        if (probeResolved && this._usedSensor === false) return; // already fell back
         const readings = [event.alpha, event.beta, event.gamma]
           .filter(v => v !== null && v !== undefined && !isNaN(v) && v !== 0);
         if (readings.length === 0) return;
-
         const rawBatch      = readings.flatMap(extractEntropyByte);
         const debiasedBatch = vonNeumannExtract(rawBatch);
         this._rawBits.push(...rawBatch);
@@ -246,9 +287,11 @@ class TRNG extends EventTarget {
       window.addEventListener('devicemotion', onMotion);
       window.addEventListener('deviceorientation', onOrientation);
 
-      // Safety timeout: after 30 s supplement with CSPRNG and finish
-      setTimeout(() => {
+      // Belt-and-suspenders: 30 s timeout for very low-movement devices
+      const safetyTimer = setTimeout(() => {
         if (this._debiasedBits.length < BITS_NEEDED) {
+          probeResolved = true;
+          clearInterval(probeInterval);
           window.removeEventListener('devicemotion', onMotion);
           window.removeEventListener('deviceorientation', onOrientation);
           this._emit('status', { message: 'Supplementing with CSPRNG…' });
@@ -258,6 +301,7 @@ class TRNG extends EventTarget {
       }, 30000);
     });
   }
+
 
   // ── Private: CSPRNG fallback ──────────────────────────────────────────────
 
