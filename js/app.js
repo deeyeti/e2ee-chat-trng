@@ -248,8 +248,8 @@ class App {
       if (code) {
         await navigator.clipboard.writeText(code).catch(() => {});
         const btn = document.getElementById('btn-copy-code');
-        btn.textContent = '✓ Copied!';
-        setTimeout(() => { btn.textContent = 'Copy Code'; }, 2000);
+        btn.textContent = 'Copied';
+        setTimeout(() => { btn.textContent = 'Copy code'; }, 2000);
       }
     });
 
@@ -259,8 +259,8 @@ class App {
       if (link) {
         await navigator.clipboard.writeText(link).catch(() => {});
         const btn = document.getElementById('btn-copy-link');
-        btn.textContent = '✓ Copied!';
-        setTimeout(() => { btn.textContent = 'Copy Link'; }, 2000);
+        btn.textContent = 'Copied';
+        setTimeout(() => { btn.textContent = 'Copy link'; }, 2000);
       }
     });
 

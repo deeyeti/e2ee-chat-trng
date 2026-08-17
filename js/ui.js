@@ -1,168 +1,146 @@
 /**
- * ui.js — UI Controller & Visualizations
+ * ui.js — UI Controller (v1.1 — Monochrome redesign)
  *
- * Manages all DOM interactions and visual feedback across 4 phases:
- *   Phase 1: TRNG — entropy harvesting progress + oscilloscope canvas
- *   Phase 2: CONNECT — session ID display, copy button, join field
- *   Phase 3: KEY_EXCHANGE — handshake animation
- *   Phase 4: CHAT — full chat interface with message bubbles
- *
- * The UI is purely reactive — it listens to events and updates state.
- * No direct calls to crypto or webrtc from here.
+ * Manages DOM interactions across 4 phases:
+ *   Phase 1: TRNG — entropy harvesting + oscilloscope
+ *   Phase 2: CONNECT — tab-based role picker
+ *   Phase 3: KEY_EXCHANGE — handshake step list
+ *   Phase 4: CHAT — minimal message interface
  */
 
 class UIController {
   constructor() {
     this._phase = 'TRNG';
-    this._oscilloscopeAnim = null;
-    this._oscilloscopeData = Array(200).fill(0);
-    this._messageCount = 0;
+    this._oscAnim = null;
+    this._oscData = Array(200).fill(0);
+    this._msgCount = 0;
+    this._handshakeTimer = null;
   }
 
-  // ── Phase Transitions ───────────────────────────────────────────────────────
+  // ── Phase Transitions ───────────────────────────────────
 
-  /** Show Phase 1: TRNG harvesting */
   showTRNGPhase(isSensorAvailable) {
     this._phase = 'TRNG';
-    this._setActiveSection('section-trng');
+    this._setActive('section-trng');
 
-    const sensorMsg = document.getElementById('sensor-status-msg');
-    if (sensorMsg) {
-      sensorMsg.textContent = isSensorAvailable
-        ? '📡 Motion sensors detected — shake or move your device'
-        : '⚠️ No motion sensors — using CSPRNG fallback';
-      sensorMsg.className = isSensorAvailable ? 'sensor-ok' : 'sensor-fallback';
+    const notice = document.getElementById('sensor-status-msg');
+    if (notice) {
+      if (isSensorAvailable) {
+        notice.textContent = 'Motion sensors detected — move or shake your device to harvest entropy.';
+        notice.className = 'sensor-notice ok';
+      } else {
+        notice.textContent = 'No motion sensors available — using CSPRNG fallback with SHA-256 whitening.';
+        notice.className = 'sensor-notice fallback';
+      }
     }
 
     this._startOscilloscope();
   }
 
-  /** Show Phase 2: Connect (waiting for peer) */
   showConnectPhase(sessionCode, isInitiator) {
     this._phase = 'CONNECT';
     this._stopOscilloscope();
-    this._setActiveSection('section-connect');
+    this._setActive('section-connect');
 
-    const initiatorPanel = document.getElementById('initiator-panel');
-    const joinerPanel = document.getElementById('joiner-panel');
+    if (isInitiator === true) {
+      // Show initiator panel inside the create tab
+      const cta = document.getElementById('create-cta');
+      const panel = document.getElementById('initiator-panel');
+      if (cta)   cta.style.display   = 'none';
+      if (panel) panel.style.display = 'block';
 
-    if (isInitiator) {
-      initiatorPanel.style.display = 'block';
-      joinerPanel.style.display = 'none';
-      document.getElementById('session-code-display').textContent = sessionCode;
-      document.getElementById('share-link').textContent =
-        `${window.location.href}?join=${sessionCode}`;
-    } else {
-      initiatorPanel.style.display = 'none';
-      joinerPanel.style.display = 'block';
+      const codeEl = document.getElementById('session-code-display');
+      if (codeEl) codeEl.textContent = sessionCode;
+
+      // Populate share link
+      const linkEl = document.getElementById('share-link');
+      const shareRow = document.getElementById('share-row');
+      if (linkEl) {
+        const url = `${window.location.origin}${window.location.pathname}?join=${sessionCode}`;
+        linkEl.textContent = url;
+        if (shareRow) shareRow.style.display = 'flex';
+      }
     }
   }
 
-  /** Show Phase 3: Key exchange handshake */
   showKeyExchangePhase() {
     this._phase = 'KEY_EXCHANGE';
-    this._setActiveSection('section-handshake');
-    this._animateHandshake();
+    this._setActive('section-handshake');
+    this._animateHandshakeSteps();
   }
 
-  /** Show Phase 4: Chat */
   showChatPhase(isInitiator) {
     this._phase = 'CHAT';
-    this._setActiveSection('section-chat');
+    this._setActive('section-chat');
     this._updateStatus('connected');
 
-    const myLabel = document.getElementById('my-peer-label');
-    if (myLabel) {
-      myLabel.textContent = isInitiator ? 'You (Host)' : 'You (Guest)';
-    }
+    const sub = document.getElementById('my-peer-label');
+    if (sub) sub.textContent = isInitiator ? 'You are the host' : 'You are the guest';
 
-    document.getElementById('chat-input').focus();
+    document.getElementById('chat-input')?.focus();
   }
 
-  // ── TRNG Visualization ──────────────────────────────────────────────────────
+  // ── TRNG Visualization ──────────────────────────────────
 
-  /**
-   * Update entropy progress bar and oscilloscope data.
-   * @param {number} percent - 0 to 100
-   * @param {number[]} [rawBits] - latest raw sensor bits for visualization
-   */
   updateEntropyProgress(percent, rawBits = []) {
-    const bar = document.getElementById('entropy-bar');
-    const label = document.getElementById('entropy-percent');
-    const bitsLabel = document.getElementById('bits-collected');
+    const bar     = document.getElementById('entropy-bar');
+    const pct     = document.getElementById('entropy-percent');
+    const bits    = document.getElementById('bits-collected');
+    const progBar = document.querySelector('[role="progressbar"]');
 
-    if (bar) bar.style.width = `${percent}%`;
-    if (label) label.textContent = `${percent}%`;
-    if (bitsLabel) {
-      const bits = Math.floor(percent * 2.56);
-      bitsLabel.textContent = `${bits} / 256 bits`;
-    }
+    if (bar)     bar.style.width = `${percent}%`;
+    if (pct)     pct.textContent = `${percent}%`;
+    if (bits)    bits.textContent = `${Math.floor(percent * 2.56)} / 256 bits`;
+    if (progBar) progBar.setAttribute('aria-valuenow', percent);
 
     // Feed oscilloscope
     if (rawBits.length > 0) {
-      const sample = rawBits.slice(0, 10).reduce((a, b) => a + b, 0) / 10;
-      this._oscilloscopeData.shift();
-      this._oscilloscopeData.push(sample);
+      const sample = rawBits.slice(-10).reduce((a, b) => a + b, 0) / 10;
+      this._oscData.shift();
+      this._oscData.push(sample);
     }
   }
 
-  /**
-   * Show TRNG completion state.
-   * @param {boolean} usedSensor
-   */
   showEntropyComplete(usedSensor) {
-    const statusEl = document.getElementById('trng-status');
-    if (statusEl) {
-      statusEl.textContent = usedSensor
-        ? '✅ 256-bit hardware entropy captured'
-        : '✅ 256-bit entropy ready (CSPRNG)';
-      statusEl.className = 'trng-complete';
-    }
     this.updateEntropyProgress(100);
+    const status = document.getElementById('trng-status');
+    if (status) {
+      status.textContent = usedSensor ? 'Hardware entropy captured' : 'CSPRNG entropy ready';
+      status.className = 'trng-complete';
+    }
   }
 
-  // ── Connection Status ───────────────────────────────────────────────────────
+  // ── Status ──────────────────────────────────────────────
 
-  /**
-   * @param {'idle'|'signaling'|'connected'|'error'} state
-   * @param {string} [message]
-   */
   _updateStatus(state, message) {
-    const statusBar = document.getElementById('status-bar');
-    if (!statusBar) return;
+    const bar  = document.getElementById('status-bar');
+    const text = bar?.querySelector('.status-text');
+    if (!bar || !text) return;
 
-    const icons = {
-      idle:      { icon: '○', text: message || 'Not connected',       cls: 'status-idle' },
-      signaling: { icon: '◎', text: message || 'Signaling…',          cls: 'status-signaling' },
-      connected: { icon: '🔒', text: message || 'E2EE Active',         cls: 'status-connected' },
-      error:     { icon: '✕', text: message || 'Connection error',     cls: 'status-error' },
+    const labels = {
+      idle:      'Idle',
+      signaling: 'Signaling…',
+      connected: 'E2EE active',
+      error:     message || 'Error',
     };
 
-    const s = icons[state] || icons.idle;
-    statusBar.className = `status-bar ${s.cls}`;
-    statusBar.querySelector('.status-icon').textContent = s.icon;
-    statusBar.querySelector('.status-text').textContent = s.text;
+    bar.className = `status-bar status-${state}`;
+    text.textContent = labels[state] ?? state;
   }
 
   setStatusSignaling() { this._updateStatus('signaling'); }
-  setStatusConnected() { this._updateStatus('connected', '🔒 P2P + E2EE Active'); }
+  setStatusConnected() { this._updateStatus('connected'); }
   setStatusError(msg)  { this._updateStatus('error', msg); }
 
-  // ── Chat Interface ──────────────────────────────────────────────────────────
+  // ── Chat ────────────────────────────────────────────────
 
-  /**
-   * Append a message bubble to the chat log.
-   * @param {string} text - decrypted plaintext
-   * @param {'me'|'peer'} sender
-   * @param {Date} [timestamp]
-   */
   appendMessage(text, sender, timestamp = new Date()) {
     const log = document.getElementById('message-log');
     if (!log) return;
 
-    const msgEl = document.createElement('div');
-    msgEl.className = `message message-${sender}`;
-    msgEl.id = `msg-${++this._messageCount}`;
+    const wrap = document.createElement('div');
+    wrap.className = `message message-${sender}`;
+    wrap.id = `msg-${++this._msgCount}`;
 
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
@@ -172,45 +150,41 @@ class UIController {
     time.className = 'msg-time';
     time.textContent = timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-    msgEl.appendChild(bubble);
-    msgEl.appendChild(time);
-    log.appendChild(msgEl);
-
-    // Smooth scroll to bottom
+    wrap.appendChild(bubble);
+    wrap.appendChild(time);
+    log.appendChild(wrap);
     log.scrollTo({ top: log.scrollHeight, behavior: 'smooth' });
 
-    // Animate in
-    requestAnimationFrame(() => msgEl.classList.add('visible'));
+    requestAnimationFrame(() => wrap.classList.add('visible'));
   }
 
-  /**
-   * Show "peer is disconnected" system message.
-   */
   showPeerDisconnected() {
     const log = document.getElementById('message-log');
-    if (!log) return;
+    if (log) {
+      const sys = document.createElement('div');
+      sys.className = 'system-msg';
+      sys.textContent = 'Peer disconnected — session ended';
+      log.appendChild(sys);
+      log.scrollTo({ top: log.scrollHeight, behavior: 'smooth' });
+    }
 
-    const sysEl = document.createElement('div');
-    sysEl.className = 'system-message';
-    sysEl.textContent = '⚠️ Peer disconnected — session ended';
-    log.appendChild(sysEl);
-    log.scrollTo({ top: log.scrollHeight, behavior: 'smooth' });
+    const input = document.getElementById('chat-input');
+    const send  = document.getElementById('send-btn');
+    if (input) input.disabled = true;
+    if (send)  send.disabled  = true;
 
-    document.getElementById('chat-input').disabled = true;
-    document.getElementById('send-btn').disabled = true;
     this._updateStatus('error', 'Peer disconnected');
   }
 
-  /** Show an error toast */
   showError(message) {
     const toast = document.getElementById('error-toast');
     if (!toast) return;
-    toast.textContent = `⚠️ ${message}`;
+    toast.textContent = message;
     toast.classList.add('show');
     setTimeout(() => toast.classList.remove('show'), 4000);
   }
 
-  // ── Oscilloscope Animation ──────────────────────────────────────────────────
+  // ── Oscilloscope ────────────────────────────────────────
 
   _startOscilloscope() {
     const canvas = document.getElementById('oscilloscope');
@@ -220,45 +194,41 @@ class UIController {
     let t = 0;
 
     const draw = () => {
-      this._oscilloscopeAnim = requestAnimationFrame(draw);
+      this._oscAnim = requestAnimationFrame(draw);
       const { width, height } = canvas;
       ctx.clearRect(0, 0, width, height);
 
-      // Background grid
-      ctx.strokeStyle = 'rgba(0, 245, 212, 0.06)';
+      // Grid
+      ctx.strokeStyle = 'rgba(255,255,255,0.04)';
       ctx.lineWidth = 1;
-      for (let x = 0; x < width; x += 30) {
+      for (let x = 0; x < width; x += 40) {
         ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke();
       }
-      for (let y = 0; y < height; y += 20) {
+      for (let y = 0; y < height; y += 25) {
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke();
       }
 
-      // Waveform from collected data
-      const data = this._oscilloscopeData;
+      // Waveform
+      const data = this._oscData;
       ctx.beginPath();
-      ctx.strokeStyle = '#00f5d4';
-      ctx.lineWidth = 2;
-      ctx.shadowColor = '#00f5d4';
-      ctx.shadowBlur = 8;
+      ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+      ctx.lineWidth = 1.5;
 
       for (let i = 0; i < data.length; i++) {
         const x = (i / data.length) * width;
-        // Add noise-like motion to idle state
-        const noise = Math.sin(t * 0.1 + i * 0.3) * 0.1;
-        const y = height / 2 - (data[i] + noise) * (height * 0.4);
+        const noise = Math.sin(t * 0.08 + i * 0.25) * 0.08;
+        const y = height / 2 - (data[i] + noise) * (height * 0.38);
         i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
       }
       ctx.stroke();
-      ctx.shadowBlur = 0;
 
-      // Scan line effect
-      const scanX = ((t % 120) / 120) * width;
-      const grad = ctx.createLinearGradient(scanX - 40, 0, scanX + 10, 0);
+      // Scan line
+      const scanX = ((t % 180) / 180) * width;
+      const grad = ctx.createLinearGradient(scanX - 30, 0, scanX + 5, 0);
       grad.addColorStop(0, 'transparent');
-      grad.addColorStop(1, 'rgba(0,245,212,0.15)');
+      grad.addColorStop(1, 'rgba(255,255,255,0.06)');
       ctx.fillStyle = grad;
-      ctx.fillRect(scanX - 40, 0, 50, height);
+      ctx.fillRect(scanX - 30, 0, 35, height);
 
       t++;
     };
@@ -267,62 +237,56 @@ class UIController {
   }
 
   _stopOscilloscope() {
-    if (this._oscilloscopeAnim) {
-      cancelAnimationFrame(this._oscilloscopeAnim);
-      this._oscilloscopeAnim = null;
+    if (this._oscAnim) {
+      cancelAnimationFrame(this._oscAnim);
+      this._oscAnim = null;
     }
   }
 
-  // ── Handshake Animation ─────────────────────────────────────────────────────
+  // ── Handshake Steps ─────────────────────────────────────
 
-  _animateHandshake() {
+  _animateHandshakeSteps() {
     const steps = [
-      { id: 'hs-step-1', text: 'Generating ECDH key pair…',    delay: 0 },
-      { id: 'hs-step-2', text: 'Exchanging public keys…',       delay: 800 },
-      { id: 'hs-step-3', text: 'Deriving shared secret…',       delay: 1600 },
-      { id: 'hs-step-4', text: 'Mixing TRNG entropy via HKDF…', delay: 2400 },
-      { id: 'hs-step-5', text: 'AES-GCM-256 key ready',         delay: 3200 },
+      { id: 'hs-step-1', delay: 0    },
+      { id: 'hs-step-2', delay: 700  },
+      { id: 'hs-step-3', delay: 1400 },
+      { id: 'hs-step-4', delay: 2100 },
+      { id: 'hs-step-5', delay: 2800 },
     ];
 
-    steps.forEach(({ id, text, delay }) => {
+    steps.forEach(({ id, delay }) => {
       setTimeout(() => {
         const el = document.getElementById(id);
         if (el) {
-          el.textContent = `✓ ${text}`;
           el.classList.add('hs-done');
+          el.querySelector('.hs-step-icon').textContent = '✓';
         }
       }, delay);
     });
   }
 
-  // ── Utilities ───────────────────────────────────────────────────────────────
+  // ── Helpers ─────────────────────────────────────────────
 
-  _setActiveSection(sectionId) {
+  _setActive(sectionId) {
     document.querySelectorAll('.app-section').forEach(s => {
       s.classList.toggle('active', s.id === sectionId);
     });
   }
 
-  /**
-   * Get the value from the session code input (joiner flow).
-   * @returns {string}
-   */
   getJoinCode() {
     return (document.getElementById('join-code-input')?.value ?? '').trim().toUpperCase();
   }
 
-  /**
-   * Get the current chat message input value.
-   * @returns {string}
-   */
   getChatInput() {
     return document.getElementById('chat-input')?.value ?? '';
   }
 
-  /** Clear the chat input field */
   clearChatInput() {
     const input = document.getElementById('chat-input');
-    if (input) input.value = '';
+    if (input) {
+      input.value = '';
+      input.style.height = 'auto';
+    }
   }
 }
 

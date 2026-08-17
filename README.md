@@ -183,6 +183,43 @@ python -m http.server 8080
 
 ---
 
+## 📋 Changelog
+
+### v1.1.0 — UI Overhaul
+> Monochrome redesign · Editorial aesthetic · Glassmorphism
+
+**UI / UX**
+- Complete CSS rewrite: monochromatic grey/black/white palette replacing neon cyan/purple
+- Typography upgrade to **Inter** (UI) + **JetBrains Mono** (data/code) from Google Fonts
+- Replaced heavy rounded card containers with flat, borderless editorial layout
+- Tab-based role switcher (Create / Join) replacing two separate role cards
+- Oscilloscope redrawn in white-on-black with subtle noise texture background
+- Progress bar redesigned as a hairline with a travelling dot indicator
+- Chat bubbles: solid white (sent) vs glassmorphism (received), no heavy borders
+- Send action changed from icon button to minimal text button
+- Status indicator redesigned as a subtle pill with a 5px status dot
+- Minimal header — wordmark only, removed logo icon
+- Handshake steps redesigned as a clean borderline step list
+
+**Technical**
+- `ui.js` fully rewritten to match new DOM structure and class names
+- Oscilloscope canvas updated to white palette with soft scan line
+- `app.js` minor updates for consistent label text
+
+---
+
+### v1.0.0 — Initial Release
+> First fully functional implementation per SRS
+
+- Hardware TRNG pipeline: DeviceMotionEvent → LSB extraction → Von Neumann debiasing → SHA-256 whitening
+- ECDH P-256 key exchange with TRNG entropy mixing via HKDF-SHA-256
+- AES-GCM-256 application-layer E2EE (Web Crypto API)
+- WebRTC P2P via PeerJS (signaling dropped post-handshake)
+- Zero-knowledge architecture: no storage API usage (CI-enforced)
+- GitHub Actions CI/CD: ESLint + zero-knowledge policy check + semantic versioning + GitHub Pages deploy
+
+---
+
 ## 📜 License
 
 MIT © 2026 — See [LICENSE](LICENSE)
