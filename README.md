@@ -1,11 +1,11 @@
 # 🔐 SecureLink — Serverless P2P E2EE Chat with Hardware TRNG
 
-[![CI / Deploy](https://github.com/YOUR_USERNAME/e2ee-chat-trng/actions/workflows/deploy.yml/badge.svg)](https://github.com/YOUR_USERNAME/e2ee-chat-trng/actions/workflows/deploy.yml)
+[![CI / Deploy](https://github.com/deeyeti/e2ee-chat-trng/actions/workflows/deploy.yml/badge.svg)](https://github.com/deeyeti/e2ee-chat-trng/actions/workflows/deploy.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-7b2fff.svg)](LICENSE)
 
 > **A serverless, peer-to-peer, end-to-end encrypted chat application where encryption keys are derived from true physical entropy harvested from your device's motion sensors.**
 
-🌐 **Live App**: [https://YOUR_USERNAME.github.io/e2ee-chat-trng](https://YOUR_USERNAME.github.io/e2ee-chat-trng)
+🌐 **Live App**: [https://deeyeti.github.io/e2ee-chat-trng](https://deeyeti.github.io/e2ee-chat-trng)
 
 ---
 
